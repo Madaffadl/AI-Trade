@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+
+# secrets - NEVER COMMIT
+.env
+.env.local
+.env.*.local
+.env.production
+*.pem
+*.key
+secrets/
+
+# local database / generated artifacts
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+/data/cache/
+
+# testing
+coverage/
+.vitest/
+
+# misc
+.DS_Store
+*.log
+npm-debug.log*
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# Claude Code — personal, machine-specific permission allowlist.
+# (.claude/launch.json is shared dev-server config and IS committed.)
+.claude/settings.local.json

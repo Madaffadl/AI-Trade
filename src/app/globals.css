@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-bg text-ink antialiased;
+  font-feature-settings: 'tnum' 1;
+}
+
+/*
+ * Tabular numerals ONLY where numbers align vertically - table columns and axis
+ * ticks. Equal-width digits make a large standalone value look loose, so stat
+ * tiles and hero figures use `.figure` instead.
+ */
+.num {
+  font-variant-numeric: tabular-nums;
+  @apply font-mono;
+}
+
+/* Large standalone values: proportional figures, same sans as everything else. */
+.figure {
+  font-variant-numeric: proportional-nums;
+  letter-spacing: -0.01em;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Keyboard focus.
+ *
+ * Before this block the app had exactly two `focus-visible` declarations in
+ * ~130 files, so tabbing through a dense table was effectively invisible. One
+ * global rule is used instead of per-component rings so that a control added
+ * later cannot silently opt out.
+ *
+ * `:focus-visible` (not `:focus`) means a mouse click does not draw the ring,
+ * only keyboard or programmatic focus - so this costs nothing visually for
+ * pointer users while making the app fully traversable by keyboard.
+ * ---------------------------------------------------------------------------
+ */
+@layer base {
+  :focus-visible {
+    outline: 2px solid theme('colors.accent.DEFAULT');
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Never remove the ring without replacing it. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /*
+   * WCAG 2.2 AA (2.5.8 Target Size Minimum) is 24x24 CSS px for pointer
+   * targets on the web - NOT the 44pt/48dp figures, which are native-platform
+   * guidance. Inline controls inside dense table rows are brought up to 24px
+   * here; primary controls are sized explicitly at their call sites.
+   */
+  a,
+  button,
+  [role='button'],
+  summary {
+    touch-action: manipulation;
+  }
+}
+
+@layer components {
+  /* Skip link: visually hidden until focused, then pinned top-left. */
+  .skip-link {
+    @apply sr-only;
+  }
+  .skip-link:focus {
+    @apply not-sr-only fixed left-4 top-4 z-50 rounded border border-accent bg-bg-raised px-4 py-2 text-sm font-medium text-ink;
+  }
+
+  /*
+   * Minimum pointer target. Expands the HIT area without changing the visual
+   * box, so a 14px "?" marker inside a 36px table row still satisfies 2.5.8
+   * without pushing the row taller.
+   */
+  .tap-24 {
+    position: relative;
+  }
+  .tap-24::after {
+    content: '';
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: 24px;
+    height: 24px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * Reduced motion. The app's motion budget is deliberately small (hover and
+ * focus transitions only), but "small" is not "none" for a user who gets
+ * motion sickness, so honour the preference globally rather than per-component.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-bg-inset;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-line-strong rounded;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-ink-faint;
+}
