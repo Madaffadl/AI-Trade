@@ -1,3 +1,5 @@
+> **Historical document.** Written for the earlier multi-market version (US/IDX stocks, Binance, watchlists) before the app was scoped to Indodax on 2026-10-29. Where it disagrees with the README, the README describes the current app.
+
 # Security
 
 Security is treated as a release requirement, not a later hardening pass.
@@ -29,7 +31,7 @@ Security is treated as a release requirement, not a later hardening pass.
 ```bash
 grep -rn "process.env.NEXT_PUBLIC" src/          # expect no matches
 npm run build
-grep -rlE "ANTHROPIC_API_KEY|AUTH_PASSWORD|TELEGRAM_BOT_TOKEN" .next/static/   # expect nothing
+grep -rlE "ANTHROPIC_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|AUTH_PASSWORD|TELEGRAM_BOT_TOKEN" .next/static/   # expect nothing
 git check-ignore -v .env.local                   # expect a match
 ```
 

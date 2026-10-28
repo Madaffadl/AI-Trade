@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { env } from '@/lib/config/env';
+import { runMigrations } from './migrations';
 
 /**
  * Minimal database abstraction over SQLite (local) and PostgreSQL (deployed).
@@ -168,28 +169,49 @@ class PostgresDb implements Db {
 }
 
 let instance: Promise<Db> | null = null;
+/** What the automatic migration on first use did, so `migrate()` can report it. */
+let firstMigration: { dialect: Dialect; statements: number; applied: string[] } | null = null;
 
-/** Process-wide database handle. */
+/**
+ * Process-wide database handle. The schema and any pending migrations are
+ * applied once per process on first use, so a running app or worker never
+ * meets a table that a newer version of the code added (both are idempotent).
+ */
 export function db(): Promise<Db> {
   if (!instance) {
     const e = env();
-    instance = e.DATABASE_URL
-      ? PostgresDb.open(e.DATABASE_URL)
-      : SqliteDb.open(e.SQLITE_PATH);
+    const opened = e.DATABASE_URL ? PostgresDb.open(e.DATABASE_URL) : SqliteDb.open(e.SQLITE_PATH);
+    instance = opened.then(async (handle) => {
+      firstMigration = await migrate(handle);
+      return handle;
+    });
+    // A failed open must not be cached forever; the next call retries.
+    instance.catch(() => {
+      instance = null;
+    });
   }
   return instance;
 }
 
-/** Apply schema.sql. Idempotent: every statement uses IF NOT EXISTS. */
-export async function migrate(target?: Db): Promise<{ dialect: Dialect; statements: number }> {
-  const handle = target ?? (await db());
+/**
+ * Apply schema.sql, then any pending steps from migrations.ts. Idempotent:
+ * every schema statement uses IF NOT EXISTS and each step runs once.
+ */
+export async function migrate(target?: Db): Promise<{ dialect: Dialect; statements: number; applied: string[] }> {
+  if (!target) {
+    // Opening the process-wide handle already migrated it; report that run.
+    const handle = await db();
+    return firstMigration ?? migrate(handle);
+  }
+  const handle = target;
   const schemaPath = resolve(process.cwd(), 'src/lib/db/schema.sql');
   const sql = readFileSync(schemaPath, 'utf8');
   const statements = splitStatements(sql);
   for (const stmt of statements) {
     await handle.exec(stmt);
   }
-  return { dialect: handle.dialect, statements: statements.length };
+  const applied = await runMigrations(handle);
+  return { dialect: handle.dialect, statements: statements.length, applied };
 }
 
 /**

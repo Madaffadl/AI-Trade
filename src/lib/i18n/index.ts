@@ -16,8 +16,9 @@ import { isLocale, type Locale } from './types';
 const DICTIONARIES: Record<Locale, Messages> = { en, id };
 
 export async function getLocale(): Promise<Locale> {
-  const value = await getSetting<string>('display.locale', 'en');
-  return isLocale(value) ? value : 'en';
+  // Indonesian first: the product is built for an Indonesian trader on Indodax.
+  const value = await getSetting<string>('display.locale', 'id');
+  return isLocale(value) ? value : 'id';
 }
 
 export async function setLocale(locale: Locale): Promise<void> {

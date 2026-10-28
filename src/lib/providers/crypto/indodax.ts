@@ -1,7 +1,6 @@
 import 'server-only';
-import type { Candle, CandleSeries, Timeframe } from '@/lib/market/types';
-import { TIMEFRAME_MS } from '@/lib/market/types';
-import { markPartial, normalizeCandles } from '@/lib/market/normalize';
+import type { CandleSeries, Timeframe } from '@/lib/market/types';
+import { cleanSymbol, fetchPairs, fetchRecentCandles, INDODAX_TF, indodaxTickerId } from '@/lib/indodax/api';
 import { httpJson, ProviderError } from '../http';
 import type { CandleRequest, MarketDataProvider, ProviderCapabilities, SymbolInfo } from '../types';
 
@@ -18,38 +17,6 @@ import type { CandleRequest, MarketDataProvider, ProviderCapabilities, SymbolInf
  * end up misjudging a trade.
  */
 
-/** Indodax's TradingView-compatible `tf` parameter. All seven are supported. */
-const TF: Record<Timeframe, string> = {
-  '1m': '1',
-  '5m': '5',
-  '15m': '15',
-  '1h': '60',
-  '4h': '240',
-  '1d': '1D',
-  '1w': '1W',
-};
-
-interface RawBar {
-  Time: number; // epoch SECONDS
-  Open: number;
-  High: number;
-  Low: number;
-  Close: number;
-  Volume: string;
-}
-
-interface RawPair {
-  ticker_id: string; // 'btc_idr'
-  symbol: string; // 'BTCIDR'
-  base_currency: string; // 'idr'
-  traded_currency: string; // 'btc'
-  traded_currency_unit: string; // 'BTC'
-  description: string; // 'BTC/IDR'
-  trade_min_traded_currency?: number;
-  trade_min_base_currency?: number;
-  price_round?: number;
-}
-
 export class IndodaxProvider implements MarketDataProvider {
   readonly id = 'indodax';
   readonly label = 'Indodax (official public API, IDR pairs)';
@@ -60,7 +27,7 @@ export class IndodaxProvider implements MarketDataProvider {
     markets: ['INDODAX spot (IDR-quoted crypto)'],
     timeframes: ['1m', '5m', '15m', '1h', '4h', '1d', '1w'],
     delay: { kind: 'realtime' },
-    quota: 'Public endpoints; no published quota. Poll conservatively.',
+    quota: 'Public endpoints; documented limit 180 requests/minute.',
     limitations: [
       'Prices are quoted in IDR and reflect the Indodax order book only - they differ from global USD/USDT venues by local premium and spread.',
       'Liquidity on some IDR pairs is thin, so wicks and spreads can be wide. Treat small-cap IDR pairs with care.',
@@ -75,71 +42,23 @@ export class IndodaxProvider implements MarketDataProvider {
   }
 
   supportsTimeframe(tf: Timeframe): boolean {
-    return TF[tf] !== undefined;
-  }
-
-  /** 'BTCIDR' (canonical here) -> 'btc_idr' for the ticker/pairs endpoints. */
-  private toTickerId(symbol: string): string {
-    const s = symbol.toUpperCase().replace(/[^A-Z]/g, '');
-    if (s.endsWith('IDR')) return `${s.slice(0, -3).toLowerCase()}_idr`;
-    return s.toLowerCase();
+    return INDODAX_TF[tf] !== undefined;
   }
 
   async fetchCandles(req: CandleRequest): Promise<CandleSeries> {
-    const tf = TF[req.timeframe];
-    if (!tf) throw new ProviderError(`Indodax does not support ${req.timeframe}.`, 'not_supported');
-
-    const step = TIMEFRAME_MS[req.timeframe];
+    if (!INDODAX_TF[req.timeframe]) throw new ProviderError(`Indodax does not support ${req.timeframe}.`, 'not_supported');
     const limit = Math.min(Math.max(req.limit, 1), 2000);
-    const nowSec = Math.floor(Date.now() / 1000);
-    // Ask for a generous window; the endpoint returns whatever exists in range.
-    const fromSec = nowSec - Math.ceil((limit * step) / 1000) * 2;
-
-    const symbol = req.symbol.toUpperCase().replace(/[^A-Z]/g, '');
-    const url =
-      `https://indodax.com/tradingview/history_v2?from=${fromSec}&symbol=${encodeURIComponent(symbol)}&tf=${tf}&to=${nowSec}`;
-
-    const fetchedAtMs = Date.now();
-    const raw = await httpJson<RawBar[]>(url, { signal: req.signal, timeoutMs: 20_000 });
-
-    if (!Array.isArray(raw)) {
-      throw new ProviderError('Indodax returned an unexpected payload shape.', 'bad_payload');
-    }
-    if (raw.length === 0) {
-      throw new ProviderError(
-        `Indodax returned no candles for ${symbol}. Check the pair exists (e.g. BTCIDR, ETHIDR).`,
-        'bad_payload',
-      );
-    }
-
-    const parsed: Candle[] = raw.map((b) => {
-      const openTimeMs = Number(b.Time) * 1000;
-      const volume = Number(b.Volume);
-      return {
-        openTimeMs,
-        closeTimeMs: openTimeMs + step,
-        open: Number(b.Open),
-        high: Number(b.High),
-        low: Number(b.Low),
-        close: Number(b.Close),
-        volume: Number.isFinite(volume) ? volume : null,
-        isPartial: false,
-      };
-    });
-
-    const report = normalizeCandles(parsed, req.timeframe);
-    const candles = markPartial(report.candles, req.timeframe, fetchedAtMs);
-
+    const { candles, warnings, fetchedAtMs } = await fetchRecentCandles(req.symbol, req.timeframe, limit, req.signal);
     return {
-      symbol,
+      symbol: cleanSymbol(req.symbol),
       exchangeId: 'INDODAX',
       assetClass: 'crypto',
       timeframe: req.timeframe,
-      candles: candles.slice(-limit),
+      candles,
       provider: this.id,
       fetchedAtMs,
       quality: 'ok',
-      notes: [...report.warnings, 'Quoted in IDR on the Indodax order book.'],
+      notes: [...warnings, 'Quoted in IDR on the Indodax order book.'],
     };
   }
 
@@ -147,7 +66,7 @@ export class IndodaxProvider implements MarketDataProvider {
   async fetchTicker(symbol: string): Promise<{ last: number; buy: number; sell: number; serverTimeMs: number }> {
     const raw = await httpJson<{
       ticker: { last: string; buy: string; sell: string; server_time: number };
-    }>(`https://indodax.com/api/ticker/${this.toTickerId(symbol)}`, { timeoutMs: 15_000 });
+    }>(`https://indodax.com/api/ticker/${indodaxTickerId(symbol)}`, { timeoutMs: 15_000 });
     if (!raw?.ticker) throw new ProviderError('Indodax ticker payload was empty.', 'bad_payload');
     return {
       last: Number(raw.ticker.last),
@@ -158,21 +77,21 @@ export class IndodaxProvider implements MarketDataProvider {
   }
 
   async searchSymbols(query: string): Promise<SymbolInfo[]> {
-    const pairs = await httpJson<RawPair[]>('https://indodax.com/api/pairs', { timeoutMs: 25_000 });
     const q = query.trim().toUpperCase();
-    return (pairs ?? [])
-      .filter((p) => p.symbol?.toUpperCase().includes(q) || p.description?.toUpperCase().includes(q))
+    return (await fetchPairs())
+      .filter((p) => p.symbol.includes(q) || p.description.toUpperCase().includes(q))
       .slice(0, 25)
       .map((p) => ({
-        symbol: p.symbol.toUpperCase(),
+        symbol: p.symbol,
         displayName: p.description,
         exchangeId: 'INDODAX',
         assetClass: 'crypto' as const,
-        currency: p.base_currency?.toUpperCase() ?? 'IDR',
-        // Real exchange minimums, so position sizing can round honestly.
-        lotSize: p.trade_min_traded_currency ?? null,
-        minNotional: p.trade_min_base_currency ?? null,
-        tickSize: null,
+        currency: p.quote || 'IDR',
+        // Real exchange increments, so position sizing rounds honestly:
+        // lotSize is the quantity STEP, minNotional the minimum order value.
+        lotSize: p.quantityIncrement,
+        minNotional: p.minOrderValue,
+        tickSize: p.priceIncrement,
       }));
   }
 }

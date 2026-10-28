@@ -2,9 +2,8 @@ import Link from 'next/link';
 import { listEvaluations } from '@/lib/evaluation/forward';
 import { formatAge, formatNumber, formatPercentSigned, formatUtc } from '@/lib/format';
 import { listSignals } from '@/lib/signals/repo';
-import { ActionBadge, Card, EmptyState, InfoNote, Stat, Table } from '@/components/ui';
+import { ActionBadge, actionHint, Card, EmptyState, InfoNote, Stat, Table } from '@/components/ui';
 import { HeadHint } from '@/components/hint';
-import { actionHint } from '@/components/scan-table';
 import { getMessages } from '@/lib/i18n';
 
 export const dynamic = 'force-dynamic';
@@ -80,7 +79,7 @@ export default async function HistoryPage() {
                     <ActionBadge action={s.action} hint={actionHint(t, s.action)} />
                   </td>
                   <td className="px-2 py-2">
-                    <Link href={`/signals/${s.id}`} className="text-ink hover:text-accent">
+                    <Link href={`/assets/${s.asset_id}?tf=${s.timeframe}`} className="text-ink hover:text-accent">
                       {s.symbol}
                     </Link>
                   </td>

@@ -185,8 +185,16 @@ export async function postJson<T>(
       cache: 'no-store',
     });
     const text = await res.text();
-    if (res.status === 429) {
-      throw new ProviderError('Rate limited by provider.', 'rate_limited', 429);
+    // 503 is how an overloaded model says "not now" (Gemini: "high demand"),
+    // so it is transient like 429, not a hard failure.
+    if (res.status === 429 || res.status === 503) {
+      const retryAfterS = Number(res.headers.get('retry-after'));
+      throw new ProviderError(
+        `Rate-limited or overloaded (HTTP ${res.status}): ${text.slice(0, 500)}`,
+        'rate_limited',
+        res.status,
+        Number.isFinite(retryAfterS) && retryAfterS > 0 ? retryAfterS * 1000 : undefined,
+      );
     }
     if (!res.ok) {
       throw new ProviderError(`HTTP ${res.status}: ${text.slice(0, 300)}`, 'http_error', res.status);

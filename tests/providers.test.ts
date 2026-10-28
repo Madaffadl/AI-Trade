@@ -1,9 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { assertSafeUrl, ProviderError } from './helpers/provider-helpers';
 import { parseFeed } from '@/lib/providers/news/rss';
-import { providerSymbol, selectProvider, coverageMatrix } from '@/lib/providers/registry';
-import { resetEnvCache } from '@/lib/config/env';
-import { convertForDisplay } from '@/lib/fx/service';
+import { selectProvider, coverageMatrix } from '@/lib/providers/registry';
 
 /**
  * Adapter-level tests that need no network access. Live connectivity is
@@ -106,52 +104,18 @@ describe('RSS/Atom parsing', () => {
   });
 });
 
-describe('provider symbol translation', () => {
-  it('maps an IDX ticker to each provider’s own convention', () => {
-    expect(providerSymbol('BBCA', 'IDX', 'yahoo')).toBe('BBCA.JK');
-    expect(providerSymbol('BBCA', 'IDX', 'twelvedata')).toBe('BBCA:IDX');
-  });
-
-  it('is idempotent when the symbol already carries a suffix', () => {
-    expect(providerSymbol('BBCA.JK', 'IDX', 'yahoo')).toBe('BBCA.JK');
-    expect(providerSymbol('BBCA:IDX', 'IDX', 'twelvedata')).toBe('BBCA:IDX');
-  });
-
-  it('leaves US and crypto symbols untouched', () => {
-    expect(providerSymbol('AAPL', 'US', 'nasdaq')).toBe('AAPL');
-    expect(providerSymbol('BTCUSDT', 'BINANCE', 'binance')).toBe('BTCUSDT');
-  });
-});
-
-describe('provider selection', () => {
-  it('selects a configured provider for crypto', () => {
-    const s = selectProvider('crypto', 'BINANCE', '1h');
+describe('provider selection (Indodax only)', () => {
+  it('prices an Indodax pair from Indodax', () => {
+    const s = selectProvider('crypto', 'INDODAX', '1h');
     expect(s.ok).toBe(true);
-  });
-
-  it('explains precisely why no provider covers IDX by default', () => {
-    const s = selectProvider('stock', 'IDX', '1d');
-    expect(s.ok).toBe(false);
-    if (!s.ok) {
-      expect(s.reason).toMatch(/No configured provider/i);
-      // Each candidate must say why it was rejected.
-      expect(s.candidates.length).toBeGreaterThan(0);
-      for (const c of s.candidates) expect(c.why.length).toBeGreaterThan(3);
-    }
+    if (s.ok) expect(s.provider.id).toBe('indodax');
   });
 
   it('never silently substitutes a different market', () => {
-    const s = selectProvider('stock', 'IDX', '1d');
-    // The US-only providers must be listed as rejected, not selected.
-    if (!s.ok) {
-      expect(s.candidates.map((c) => c.id)).toContain('nasdaq');
-    }
-  });
-
-  it('refuses an unsupported timeframe rather than approximating it', () => {
-    const s = selectProvider('stock', 'US', '1w');
-    if (!s.ok) {
-      expect(s.candidates.some((c) => /does not provide/.test(c.why))).toBe(true);
+    for (const [cls, ex] of [['crypto', 'BINANCE'], ['stock', 'US'], ['stock', 'IDX']] as const) {
+      const s = selectProvider(cls, ex, '1d');
+      expect(s.ok).toBe(false);
+      if (!s.ok) expect(s.reason).toMatch(/Only Indodax/);
     }
   });
 });
@@ -159,169 +123,13 @@ describe('provider selection', () => {
 describe('coverage matrix honesty', () => {
   const matrix = coverageMatrix();
 
-  it('declares limitations for every provider', () => {
-    for (const p of matrix) {
-      expect(p.capabilities.limitations.length, `${p.id} has no documented limitations`).toBeGreaterThan(0);
-    }
+  it('lists Indodax as the only market-data provider, verified live and keyless', () => {
+    expect(matrix.map((p) => p.id)).toEqual(['indodax']);
+    expect(matrix[0]).toMatchObject({ requiresKey: false, configured: true });
+    expect(matrix[0]!.capabilities.verified).toBe(true);
   });
 
-  it('marks unverified providers as unverified', () => {
-    const yahoo = matrix.find((p) => p.id === 'yahoo')!;
-    const twelve = matrix.find((p) => p.id === 'twelvedata')!;
-    expect(yahoo.capabilities.verified).toBe(false);
-    expect(twelve.capabilities.verified).toBe(false);
-  });
-
-  it('marks the live-tested providers as verified', () => {
-    for (const id of ['binance', 'coinbase', 'nasdaq']) {
-      expect(matrix.find((p) => p.id === id)!.capabilities.verified, id).toBe(true);
-    }
-  });
-
-  it('discloses that Nasdaq intraday has no volume', () => {
-    const nasdaq = matrix.find((p) => p.id === 'nasdaq')!;
-    expect(nasdaq.capabilities.limitations.join(' ')).toMatch(/volume is not available/i);
-  });
-});
-
-describe('IDX routing once a Twelve Data key is configured', () => {
-  /**
-   * The supported path to Indonesian data. These tests pin the wiring so that
-   * setting TWELVEDATA_API_KEY is genuinely sufficient - no code change, no
-   * provider-list edit. They do NOT make network calls and therefore do not
-   * claim the free plan returns IDX candles; only `providers:verify` can
-   * answer that, against a real key.
-   */
-  const KEY = 'TWELVEDATA_API_KEY';
-  const PROVIDERS = 'STOCK_PROVIDERS';
-  let previousKey: string | undefined;
-  let previousProviders: string | undefined;
-
-  beforeEach(() => {
-    previousKey = process.env[KEY];
-    previousProviders = process.env[PROVIDERS];
-  });
-
-  afterEach(() => {
-    if (previousKey === undefined) delete process.env[KEY];
-    else process.env[KEY] = previousKey;
-    if (previousProviders === undefined) delete process.env[PROVIDERS];
-    else process.env[PROVIDERS] = previousProviders;
-    resetEnvCache();
-  });
-
-  it('leaves IDX unserved while no key is set, and explains why', () => {
-    delete process.env[KEY];
-    delete process.env[PROVIDERS];
-    resetEnvCache();
-
-    const s = selectProvider('stock', 'IDX', '1d');
-    expect(s.ok).toBe(false);
-    if (!s.ok) {
-      expect(s.candidates.find((c) => c.id === 'twelvedata')?.why).toMatch(/API key not configured/i);
-      expect(s.remedy).toMatch(/TWELVEDATA_API_KEY/);
-    }
-  });
-
-  it('routes IDX to Twelve Data as soon as the key is present — no config edit needed', () => {
-    process.env[KEY] = 'test-key-not-a-real-credential';
-    delete process.env[PROVIDERS]; // rely on the shipped default order
-    resetEnvCache();
-
-    const s = selectProvider('stock', 'IDX', '1d');
-    expect(s.ok).toBe(true);
-    if (s.ok) expect(s.provider.id).toBe('twelvedata');
-  });
-
-  it('still prefers the key-less Nasdaq provider for US equities', () => {
-    process.env[KEY] = 'test-key-not-a-real-credential';
-    delete process.env[PROVIDERS];
-    resetEnvCache();
-
-    const s = selectProvider('stock', 'US', '1d');
-    expect(s.ok).toBe(true);
-    // Nasdaq needs no key and has no daily quota, so it must win for US.
-    if (s.ok) expect(s.provider.id).toBe('nasdaq');
-  });
-
-  it('translates the canonical IDX symbol into Twelve Data form', () => {
-    expect(providerSymbol('BBCA', 'IDX', 'twelvedata')).toBe('BBCA:IDX');
-  });
-});
-
-describe('FX display conversion', () => {
-  /**
-   * Conversion is display-only. These tests pin the two rules that keep it
-   * honest: the native value is always preserved, and a missing rate yields
-   * the native number rather than an approximation.
-   */
-  const rates = {
-    base: 'USD' as const,
-    rates: { USD: 1, IDR: 18_030.163453, EUR: 0.92 },
-    providerUpdatedAtMs: Date.now() - 3_600_000,
-    fetchedAtMs: Date.now(),
-  };
-  const toIdr = { target: 'IDR' as const, rates };
-  const toUsd = { target: 'USD' as const, rates };
-  const native = { target: 'native' as const, rates: null };
-
-  it('leaves values untouched in native mode', () => {
-    const m = convertForDisplay(100, 'USD', native);
-    expect(m.converted).toBe(false);
-    expect(m.value).toBe(100);
-    expect(m.currency).toBe('USD');
-  });
-
-  it('does not convert when the currency already matches', () => {
-    expect(convertForDisplay(5000, 'IDR', toIdr).converted).toBe(false);
-  });
-
-  it('converts USD to IDR using the rate', () => {
-    const m = convertForDisplay(100, 'USD', toIdr);
-    expect(m.converted).toBe(true);
-    expect(m.value).toBeCloseTo(1_803_016.3453, 3);
-    expect(m.currency).toBe('IDR');
-  });
-
-  it('converts IDR back to USD', () => {
-    const m = convertForDisplay(18_030.163453, 'IDR', toUsd);
-    expect(m.value).toBeCloseTo(1, 9);
-  });
-
-  it('round-trips without drift', () => {
-    const toIdrThenBack = convertForDisplay(convertForDisplay(250, 'USD', toIdr).value!, 'IDR', toUsd);
-    expect(toIdrThenBack.value).toBeCloseTo(250, 9);
-  });
-
-  it('treats stablecoins as their peg but says so', () => {
-    const m = convertForDisplay(100, 'USDT', toIdr);
-    expect(m.converted).toBe(true);
-    expect(m.value).toBeCloseTo(1_803_016.3453, 3);
-    expect(m.note).toMatch(/stablecoin, not dollars/i);
-  });
-
-  it('ALWAYS preserves the native value and currency', () => {
-    const m = convertForDisplay(100, 'USD', toIdr);
-    expect(m.nativeValue).toBe(100);
-    expect(m.nativeCurrency).toBe('USD');
-  });
-
-  it('falls back to native when no rate is cached rather than approximating', () => {
-    const m = convertForDisplay(100, 'USD', { target: 'IDR', rates: null });
-    expect(m.converted).toBe(false);
-    expect(m.value).toBe(100);
-    expect(m.currency).toBe('USD');
-    expect(m.note).toMatch(/No exchange rate available/i);
-  });
-
-  it('falls back to native for a currency missing from the rate table', () => {
-    const m = convertForDisplay(100, 'XYZ', toIdr);
-    expect(m.converted).toBe(false);
-    expect(m.note).toMatch(/No rate for XYZ/i);
-  });
-
-  it('passes null and non-finite values through untouched', () => {
-    expect(convertForDisplay(null, 'USD', toIdr).value).toBeNull();
-    expect(convertForDisplay(Number.NaN, 'USD', toIdr).converted).toBe(false);
+  it('declares its limitations', () => {
+    expect(matrix[0]!.capabilities.limitations.length).toBeGreaterThan(0);
   });
 });

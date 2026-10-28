@@ -1,20 +1,23 @@
 import 'server-only';
 import { env, features } from '@/lib/config/env';
 import { db } from '@/lib/db/driver';
-import { newId, nowMs, recordProviderError, recordProviderOk } from '@/lib/db/repo';
+import { newId, nowMs, providerCooldowns, recordProviderError, recordProviderOk } from '@/lib/db/repo';
+import { getLocale } from '@/lib/i18n';
+import type { Locale } from '@/lib/i18n/types';
 import { canGenerateSignals } from '@/lib/market/freshness';
 import { closedOnly } from '@/lib/market/normalize';
 import { getSeries } from '@/lib/market/service';
 import type { AssetRef, Timeframe } from '@/lib/market/types';
 import { styleForTimeframe } from '@/lib/market/types';
 import { listArticlesForAsset, type ArticleRow } from '@/lib/news/repo';
-import { aiProvider } from '@/lib/providers/ai';
+import { aiCooldownMs, aiProviderChain, providersToTry } from '@/lib/providers/ai';
 import { ProviderError } from '@/lib/providers/http';
 import { classifyRegime } from '@/lib/signals/regime';
 import { buildIndicators, STRATEGIES } from '@/lib/strategies';
 import type { StrategyOutput } from '@/lib/strategies/types';
-import { buildUserPrompt, SYSTEM_PROMPT } from './prompt';
-import { validateAiAnalysis, type AiAnalysis } from './schema';
+import { setSetupAnalysis, type StoredSetup } from '@/lib/plan/repo';
+import { buildUserPrompt, SYSTEM_PROMPT, type PlanPromptContext } from './prompt';
+import { parseModelJson, validateAiAnalysis, type AiAnalysis } from './schema';
 
 /**
  * Analysis orchestration.
@@ -57,9 +60,53 @@ export interface AnalysisResult {
 /** Longest lookback any indicator in the bundle needs (EMA 200). */
 const LONGEST_INDICATOR_PERIOD = 200;
 
+/**
+ * Output budget per AI call. The JSON answer itself is ~1-2K tokens, but
+ * reasoning models (Gemini 3.x, Claude Opus 5.5) spend their thinking from the
+ * same budget; at 2K the answer was at risk of being cut off mid-object.
+ * Providers with a tighter quota cap this further (see providers/ai).
+ */
+const AI_MAX_OUTPUT_TOKENS = 8_192;
+
+
 export interface AnalysisOptions {
   allowAiCall?: boolean;
   force?: boolean;
+  /** Commentary language; defaults to the interface language. */
+  language?: Locale;
+  /**
+   * Explain this setup's trade plan. The model gets the plan's numbers and
+   * validation label, the per-asset cache is bypassed (an explanation of a
+   * different plan would not fit), and a successful run is linked to the setup.
+   */
+  setup?: { setup: StoredSetup; outOfSample: PlanPromptContext['outOfSample'] };
+}
+
+export function planPromptContext(setup: StoredSetup, outOfSample: PlanPromptContext['outOfSample']): PlanPromptContext {
+  const p = setup.plan;
+  return {
+    state: setup.state,
+    strategy: `${p.strategyId}@${p.strategyVersion}`,
+    timeframe: p.timeframe,
+    contextTimeframe: p.contextTimeframe,
+    contextUp: p.context.up,
+    trigger: setup.state === 'WAIT_FOR_ENTRY' && setup.state_reason === 'awaiting_trigger' ? p.trigger : null,
+    entryPlanned: p.entry.planned,
+    entryMax: p.entry.max,
+    stopLoss: p.stopLoss,
+    stopDistancePercent: p.outcome.stopDistancePercent,
+    takeProfit1: p.takeProfit1,
+    tp1DistancePercent: p.outcome.tp1DistancePercent,
+    takeProfit2: p.takeProfit2,
+    netRiskReward: p.outcome.netRiskReward,
+    roundTripCostPercent: p.costs.roundTripPercent,
+    amountIdr: p.sizing.notionalIdr,
+    lossAtStopIdr: p.sizing.lossAtStopIdr,
+    netProfitTp1Idr: p.outcome.netProfitTp1Idr,
+    holdHours: Math.round(p.holding.horizonMs / 3_600_000),
+    validation: setup.validation,
+    outOfSample,
+  };
 }
 
 export async function analyzeAsset(
@@ -160,14 +207,14 @@ export async function analyzeAsset(
   if (!flags.aiEnabled) {
     base.aiStatus = 'skipped';
     base.aiError =
-      env().AI_PROVIDER === 'none'
+      env().AI_PROVIDER.length === 0
         ? 'AI_PROVIDER is set to "none". Showing deterministic analysis only.'
-        : 'No API key is configured for the selected AI provider. Showing deterministic analysis only.';
+        : 'None of the AI providers in AI_PROVIDER has an API key and model configured. Showing deterministic analysis only.';
     await persistRun(base, null);
     return base;
   }
 
-  const cached = options.force ? null : await findCachedRun(asset.id, timeframe);
+  const cached = options.force || options.setup ? null : await findCachedRun(asset.id, timeframe);
   if (cached) {
     base.ai = cached.ai;
     base.aiStatus = 'cached';
@@ -202,8 +249,8 @@ export async function analyzeAsset(
     return base;
   }
 
-  const provider = aiProvider()!;
   const { prompt, allowedUrls } = buildUserPrompt({
+    language: options.language ?? (await getLocale()),
     symbol: asset.symbol,
     displayName: asset.displayName,
     exchangeId: asset.exchangeId,
@@ -220,48 +267,66 @@ export async function analyzeAsset(
     indicators: base.indicators,
     strategyOutputs: base.strategies,
     articles: base.articles,
+    plan: options.setup ? planPromptContext(options.setup.setup, options.setup.outOfSample) : undefined,
   });
 
-  try {
-    const response = await provider.complete({ systemPrompt: SYSTEM_PROMPT, userPrompt: prompt, maxTokens: 2000 });
-    await recordProviderOk(provider.id, 'ai');
+  // Walk the fallback chain. A provider that errors, returns malformed JSON,
+  // or fails validation hands over to the next one; the first valid answer
+  // wins. Every failure is kept so the final message says what went wrong.
+  const failures: string[] = [];
+  const { attempt, skipped } = providersToTry(
+    aiProviderChain().filter((p) => p.isConfigured()),
+    await providerCooldowns('ai'),
+    nowMs(),
+  );
+  for (const s of skipped) {
+    failures.push(`${s.key}: skipped, cooling down until ${new Date(s.untilMs).toISOString()} after a recent failure`);
+  }
+  for (const provider of attempt) {
+    try {
+      const response = await provider.complete({
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt: prompt,
+        maxTokens: AI_MAX_OUTPUT_TOKENS,
+      });
+      await recordProviderOk(provider.key, 'ai');
 
-    const parsed = safeJson(response.text);
-    if (!parsed.ok) {
-      base.aiStatus = 'error';
-      base.aiError = `Model did not return valid JSON: ${parsed.error}`;
-    } else {
+      const parsed = parseModelJson(response.text);
+      if (!parsed.ok) {
+        failures.push(`${provider.key}: did not return valid JSON (${parsed.error})`);
+        continue;
+      }
       const validation = validateAiAnalysis(parsed.value, allowedUrls);
       if (!validation.ok) {
         // A response that invents a URL or promises profit is discarded, not
         // shown with a warning.
-        base.aiStatus = 'error';
-        base.aiError = `AI response rejected by schema validation: ${validation.errors.join('; ')}`;
-      } else {
-        base.ai = validation.analysis;
-        base.aiStatus = 'ok';
-        base.aiProvider = response.provider;
-        base.aiModel = response.model;
+        failures.push(`${provider.key}: rejected by schema validation (${validation.errors.join('; ')})`);
+        continue;
       }
+      base.ai = validation.analysis;
+      base.aiStatus = 'ok';
+      base.aiProvider = response.provider;
+      base.aiModel = response.model;
+      if (failures.length > 0) {
+        base.notes.push(`AI commentary came from fallback ${provider.key} after: ${failures.join(' | ')}`);
+      }
+      break;
+    } catch (err) {
+      const pe = err instanceof ProviderError ? err : new ProviderError(String(err), 'network');
+      const cooldown = aiCooldownMs(pe);
+      await recordProviderError(provider.key, 'ai', pe.message, cooldown === undefined ? undefined : nowMs() + cooldown);
+      failures.push(`${provider.key} (${pe.kind}): ${pe.message}`);
     }
-  } catch (err) {
-    const pe = err instanceof ProviderError ? err : new ProviderError(String(err), 'network');
-    await recordProviderError(provider.id, 'ai', pe.message);
+  }
+
+  if (!base.ai) {
     base.aiStatus = 'error';
-    base.aiError = `AI provider failed (${pe.kind}): ${pe.message}. Deterministic analysis is unaffected.`;
+    base.aiError = `Every configured AI provider failed: ${failures.join(' | ')}. Deterministic analysis is unaffected.`;
   }
 
   await persistRun(base, base.ai);
+  if (base.ai && options.setup) await setSetupAnalysis(options.setup.setup.id, base.runId);
   return base;
-}
-
-function safeJson(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
-  const trimmed = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  try {
-    return { ok: true, value: JSON.parse(trimmed) };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 async function persistRun(result: AnalysisResult, ai: AiAnalysis | null): Promise<void> {
@@ -288,6 +353,53 @@ async function persistRun(result: AnalysisResult, ai: AiAnalysis | null): Promis
       result.dataQuality,
     ],
   );
+}
+
+/**
+ * The panel's first render: cached AI commentary if any, read from the
+ * database only. Never calls a market-data or AI provider.
+ */
+export async function cachedAnalysisForPanel(
+  assetId: string,
+  timeframe: Timeframe,
+): Promise<Pick<AnalysisResult, 'aiStatus' | 'aiProvider' | 'aiModel' | 'aiError' | 'ai'>> {
+  const cached = await findCachedRun(assetId, timeframe);
+  return cached
+    ? { aiStatus: 'cached', aiProvider: cached.provider, aiModel: cached.model, aiError: null, ai: cached.ai }
+    : { aiStatus: 'skipped', aiProvider: 'deterministic', aiModel: null, aiError: null, ai: null };
+}
+
+/**
+ * Commentary for a setup's page: the run written for this setup if there is
+ * one (the worker explains the top setups), otherwise the asset's cached run.
+ * Database only.
+ */
+export async function analysisForSetup(
+  setup: Pick<StoredSetup, 'analysis_run_id' | 'asset_id' | 'timeframe'>,
+): Promise<Pick<AnalysisResult, 'aiStatus' | 'aiProvider' | 'aiModel' | 'aiError' | 'ai'> & { generatedAtMs: number | null }> {
+  if (setup.analysis_run_id) {
+    const run = await analysisRun(setup.analysis_run_id);
+    if (run) return { aiStatus: 'cached', aiProvider: run.provider, aiModel: run.model, aiError: null, ai: run.ai, generatedAtMs: run.startedAtMs };
+  }
+  return { ...(await cachedAnalysisForPanel(setup.asset_id, setup.timeframe as Timeframe)), generatedAtMs: null };
+}
+
+/** A successful AI run by id. */
+export async function analysisRun(
+  id: string,
+): Promise<{ ai: AiAnalysis; provider: string; model: string | null; startedAtMs: number } | null> {
+  const d = await db();
+  const row = await d.get<{ analysis_json: string; ai_provider: string; ai_model: string | null; started_at_ms: number }>(
+    `SELECT analysis_json, ai_provider, ai_model, started_at_ms FROM analysis_runs
+      WHERE id = ? AND ai_status = 'ok' AND analysis_json IS NOT NULL`,
+    [id],
+  );
+  if (!row) return null;
+  try {
+    return { ai: JSON.parse(row.analysis_json) as AiAnalysis, provider: row.ai_provider, model: row.ai_model, startedAtMs: row.started_at_ms };
+  } catch {
+    return null;
+  }
 }
 
 async function findCachedRun(

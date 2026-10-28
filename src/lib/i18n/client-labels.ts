@@ -156,146 +156,21 @@ export function aiPanelLabels(t: Messages): AiPanelLabels {
   };
 }
 
-export interface WatchlistFormLabels {
-  market: string;
-  searchSymbol: string;
-  tradingStyle: string;
-  search: string;
-  searching: string;
-  add: string;
-  noResults: string;
-  /** Template with `{symbol}`. */
-  addedTemplate: string;
-  addFailed: string;
-  /** Template with `{symbol}`. */
-  confirmRemoveTemplate: string;
-  remove: string;
-  crypto: string;
-  stocks: string;
-  networkError: string;
-}
-
-export function watchlistFormLabels(t: Messages): WatchlistFormLabels {
+/** Labels for the "Simulate this plan" button. */
+export function simulateLabels(t: Messages): import('@/components/plan/simulate-button').SimulateLabels {
   return {
-    market: t.watchlist.searchMarket,
-    searchSymbol: t.watchlist.searchSymbol,
-    tradingStyle: t.watchlist.tradingStyle,
-    search: t.watchlist.search,
-    searching: t.watchlist.searching,
-    add: t.watchlist.add,
-    noResults: t.watchlist.noResults,
-    addedTemplate: t.watchlist.added('{symbol}'),
-    addFailed: t.watchlist.addFailed,
-    confirmRemoveTemplate: t.watchlist.confirmRemove('{symbol}'),
-    remove: t.common.remove,
-    crypto: t.common.crypto,
-    stocks: t.common.stocks,
-    networkError: t.common.networkError,
-  };
-}
-
-export interface RecommendLabels {
-  notAPrediction: string;
-  howScored: string;
-  howScoredBody: string;
-  filterExchange: string;
-  filterBand: string;
-  allVenues: string;
-  anyBand: string;
-  bandLiquid: string;
-  bandActive: string;
-  bandSpeculative: string;
-  bandThin: string;
-  bandLiquidHelp: string;
-  bandActiveHelp: string;
-  bandSpeculativeHelp: string;
-  bandThinHelp: string;
-  colSymbol: string;
-  colScore: string;
-  colVolume: string;
-  colRange: string;
-  colChange: string;
-  colTrades: string;
-  colBand: string;
-  colWhy: string;
-  scoreHelp: string;
-  volumeHelp: string;
-  rangeHelp: string;
-  tradesHelp: string;
-  track: string;
-  tracking: string;
-  tracked: string;
-  added: string;
-  addFailed: string;
-  reasonDeepLiquidity: string;
-  reasonTradeableLiquidity: string;
-  reasonThinLiquidity: string;
-  reasonManyTrades: string;
-  reasonTradeCountUnavailable: string;
-  reasonWideRange: string;
-  reasonModerateRange: string;
-  reasonNarrowRange: string;
-  reasonAlreadyTracked: string;
-  /** Template with `{count}` and `{min}`. */
-  excludedFlatTemplate: string;
-  equitiesNote: string;
-  empty: string;
-  venueError: string;
-  generatedAt: string;
-  refresh: string;
-  tradingStyle: string;
-}
-
-export function recommendLabels(t: Messages): RecommendLabels {
-  return {
-    notAPrediction: t.recommend.notAPrediction,
-    howScored: t.recommend.howScored,
-    howScoredBody: t.recommend.howScoredBody,
-    filterExchange: t.recommend.filterExchange,
-    filterBand: t.recommend.filterBand,
-    allVenues: t.recommend.allVenues,
-    anyBand: t.recommend.anyBand,
-    bandLiquid: t.recommend.bandLiquid,
-    bandActive: t.recommend.bandActive,
-    bandSpeculative: t.recommend.bandSpeculative,
-    bandThin: t.recommend.bandThin,
-    bandLiquidHelp: t.recommend.bandLiquidHelp,
-    bandActiveHelp: t.recommend.bandActiveHelp,
-    bandSpeculativeHelp: t.recommend.bandSpeculativeHelp,
-    bandThinHelp: t.recommend.bandThinHelp,
-    colSymbol: t.recommend.colSymbol,
-    colScore: t.recommend.colScore,
-    colVolume: t.recommend.colVolume,
-    colRange: t.recommend.colRange,
-    colChange: t.recommend.colChange,
-    colTrades: t.recommend.colTrades,
-    colBand: t.recommend.colBand,
-    colWhy: t.recommend.colWhy,
-    scoreHelp: t.recommend.scoreHelp,
-    volumeHelp: t.recommend.volumeHelp,
-    rangeHelp: t.recommend.rangeHelp,
-    tradesHelp: t.recommend.tradesHelp,
-    track: t.recommend.track,
-    tracking: t.recommend.tracking,
-    tracked: t.recommend.tracked,
-    added: t.recommend.added,
-    addFailed: t.recommend.addFailed,
-    reasonDeepLiquidity: t.recommend.reasonDeepLiquidity,
-    reasonTradeableLiquidity: t.recommend.reasonTradeableLiquidity,
-    reasonThinLiquidity: t.recommend.reasonThinLiquidity,
-    reasonManyTrades: t.recommend.reasonManyTrades,
-    reasonTradeCountUnavailable: t.recommend.reasonTradeCountUnavailable,
-    reasonWideRange: t.recommend.reasonWideRange,
-    reasonModerateRange: t.recommend.reasonModerateRange,
-    reasonNarrowRange: t.recommend.reasonNarrowRange,
-    reasonAlreadyTracked: t.recommend.reasonAlreadyTracked,
-    // `{count}` / `{min}` are substituted on the client with `fill()`.
-    excludedFlatTemplate: t.recommend.excludedFlat(-1, -1).replace('-1', '{count}').replace('-1', '{min}'),
-    equitiesNote: t.recommend.equitiesNote,
-    empty: t.recommend.empty,
-    venueError: t.recommend.venueError,
-    generatedAt: t.recommend.generatedAt,
-    refresh: t.recommend.refresh,
-    tradingStyle: t.watchlist.tradingStyle,
+    simulate: t.sim.simulate,
+    simulating: t.sim.simulating,
+    started: t.sim.simStarted,
+    pending: t.sim.simPending,
+    viewSims: t.sim.viewSims,
+    failed: t.sim.actionFailed,
+    errors: {
+      not_actionable: t.sim.errNotActionable,
+      already_simulating: t.sim.errAlready,
+      max_positions: t.sim.errMax,
+      too_small: t.sim.errSmall,
+      daily_stop: t.sim.errDaily,
+    },
   };
 }

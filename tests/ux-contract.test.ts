@@ -295,31 +295,6 @@ describe('chart readout logic', () => {
  * reading it — so each one would have shipped again without a test.
  */
 describe('functional review fixes stay fixed', () => {
-  it('asks Binance for exchangeInfo with a raised byte cap', async () => {
-    // The 8 MB default made EVERY crypto symbol search throw
-    // "Response too large (17794976 bytes)".
-    const src = readFileSync(fileURLToPath(new URL('../src/lib/providers/crypto/binance.ts', import.meta.url)), 'utf8');
-    const search = src.slice(src.indexOf('async searchSymbols'));
-    expect(search).toMatch(/maxBytes:\s*48 \* 1024 \* 1024/);
-  });
-
-  it('does not gate the IDX catalogue behind an API key', async () => {
-    // The Twelve Data /stocks reference endpoint needs no credential; gating
-    // on one left the product list with zero Indonesian stocks.
-    const src = readFileSync(fileURLToPath(new URL('../src/lib/markets/catalog.ts', import.meta.url)), 'utf8');
-    const fn = src.slice(src.indexOf('async function syncIdx'), src.indexOf('/** Refresh every source'));
-    expect(fn).not.toContain('TWELVEDATA_API_KEY');
-    expect(fn).toContain('country=Indonesia');
-  });
-
-  it('searches the local catalogue before reaching for a provider', async () => {
-    const src = readFileSync(fileURLToPath(new URL('../src/app/api/assets/search/route.ts', import.meta.url)), 'utf8');
-    expect(src).toContain('searchCatalog');
-    // An unconfigured provider must be reported, not silently skipped.
-    expect(src).toContain('notices');
-    expect(src).toMatch(/isConfigured\(\)[\s\S]{0,200}notices\.push/);
-  });
-
   it('explains an exit in words rather than rule codes', async () => {
     const types = readFileSync(fileURLToPath(new URL('../src/lib/strategies/types.ts', import.meta.url)), 'utf8');
     expect(types).toContain('export function describeExits');
@@ -334,25 +309,10 @@ describe('functional review fixes stay fixed', () => {
     }
   });
 
-  it('reads the Indodax 24h open from the key that venue actually uses', async () => {
-    // `tickers` is keyed "btc_idr", `prices_24h` is keyed "btcidr". Using the
-    // ticker key missed every time and reported every change as 0.00%.
-    const src = readFileSync(fileURLToPath(new URL('../src/lib/markets/recommend.ts', import.meta.url)), 'utf8');
-    expect(src).toContain("pair.replace(/_/g, '')");
-  });
-
-  it('excludes currency pegs from the candidate ranking', async () => {
-    // USDCUSDT is the most liquid pair on the venue and cannot be traded.
-    const src = readFileSync(fileURLToPath(new URL('../src/lib/markets/recommend.ts', import.meta.url)), 'utf8');
-    expect(src).toContain('PEGGED_ASSETS');
+  it('keeps stablecoins out of the scan universe', async () => {
+    // A stablecoin/IDR pair is the most liquid market there is and cannot move.
+    const src = readFileSync(fileURLToPath(new URL('../src/lib/indodax/universe.ts', import.meta.url)), 'utf8');
     expect(src).toMatch(/PEGGED_ASSETS\.has/);
-  });
-
-  it('gives the price-threshold API a user interface', async () => {
-    const form = readFileSync(fileURLToPath(new URL('../src/app/assets/[id]/threshold-form.tsx', import.meta.url)), 'utf8');
-    expect(form).toContain("'/api/thresholds'");
-    const page = readFileSync(fileURLToPath(new URL('../src/app/assets/[id]/page.tsx', import.meta.url)), 'utf8');
-    expect(page).toContain('<ThresholdForm');
   });
 
   it('no longer declares the table nothing reads or writes', async () => {

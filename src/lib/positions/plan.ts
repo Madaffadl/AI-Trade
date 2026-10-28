@@ -2,11 +2,11 @@ import 'server-only';
 import { getAssetById } from '@/lib/db/repo';
 import { closedOnly } from '@/lib/market/normalize';
 import { getSeries } from '@/lib/market/service';
-import type { DataQuality, SignalAction } from '@/lib/market/types';
+import { isTimeframe, TIMEFRAME_MS, type DataQuality, type SignalAction } from '@/lib/market/types';
 import { classifyRegime } from '@/lib/signals/regime';
 import { buildIndicators, STRATEGIES } from '@/lib/strategies';
 import type { RuleOutcome } from '@/lib/strategies/types';
-import type { PositionWithAsset } from './repo';
+import type { PositionRow, PositionWithAsset } from './repo';
 
 /**
  * The live plan for an open position.
@@ -56,8 +56,26 @@ export interface PositionPlan {
   targetReached: boolean;
   warnings: string[];
   holdingDays: number;
+  /**
+   * When the plan says to be out at the latest: entry time + the strategy's
+   * evaluation horizon on the position's timeframe. Null when the position was
+   * recorded without a strategy.
+   */
+  sellByMs: number | null;
+  sellByPassed: boolean;
   dataFetchedAtMs: number | null;
   latestCandleMs: number | null;
+}
+
+/**
+ * When the plan says to be out at the latest: entry time + the strategy's
+ * evaluation horizon on the position's timeframe. Null without a strategy.
+ */
+export function positionSellByMs(position: Pick<PositionRow, 'strategy_id' | 'timeframe' | 'entry_at_ms'>): number | null {
+  const strategy = STRATEGIES.find((s) => s.id === position.strategy_id);
+  return strategy && isTimeframe(position.timeframe)
+    ? position.entry_at_ms + strategy.evaluationHorizonBars * TIMEFRAME_MS[position.timeframe]
+    : null;
 }
 
 export async function buildPositionPlan(position: PositionWithAsset): Promise<PositionPlan> {
@@ -65,6 +83,7 @@ export async function buildPositionPlan(position: PositionWithAsset): Promise<Po
   const warnings: string[] = [];
 
   const costBasis = position.entry_price * position.quantity;
+  const sellBy = positionSellByMs(position);
   const base: PositionPlan = {
     positionId: position.id,
     symbol: position.symbol,
@@ -95,6 +114,8 @@ export async function buildPositionPlan(position: PositionWithAsset): Promise<Po
     targetReached: false,
     warnings,
     holdingDays: Math.max(0, (Date.now() - position.entry_at_ms) / 86_400_000),
+    sellByMs: sellBy,
+    sellByPassed: sellBy !== null && Date.now() >= sellBy,
     dataFetchedAtMs: null,
     latestCandleMs: null,
   };

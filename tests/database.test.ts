@@ -19,8 +19,6 @@ const REQUIRED_TABLES = [
   'assets',
   'exchanges',
   'market_candles',
-  'watchlists',
-  'watchlist_assets',
   'news_articles',
   'news_asset_impacts',
   'analysis_runs',
@@ -31,6 +29,12 @@ const REQUIRED_TABLES = [
   'notification_deliveries',
   'provider_status',
   'application_settings',
+  'positions',
+  'schema_migrations',
+  'scan_runs',
+  'trade_setups',
+  'sim_trades',
+  'strategy_validations',
 ];
 
 describe('schema', () => {

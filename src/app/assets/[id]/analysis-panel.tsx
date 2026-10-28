@@ -31,12 +31,15 @@ interface AnalysisResponse {
 export function AnalysisPanel({
   assetId,
   timeframe,
+  setupId,
   aiEnabled,
   initial,
   t,
 }: {
   assetId: string;
   timeframe: string;
+  /** When set, the AI explains this setup's trade plan rather than the asset in general. */
+  setupId?: string;
   aiEnabled: boolean;
   initial: AnalysisResponse;
   t: AiPanelLabels;
@@ -50,7 +53,7 @@ export function AnalysisPanel({
       const res = await fetch('/api/analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assetId, timeframe, allowAiCall: true, force }),
+        body: JSON.stringify({ assetId, timeframe, setupId, allowAiCall: true, force }),
       });
       const body = (await res.json()) as AnalysisResponse & { error?: string };
       if (res.ok) setState(body);

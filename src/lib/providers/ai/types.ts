@@ -1,3 +1,5 @@
+import type { AiProviderId } from '@/lib/config/env';
+
 export interface AiRequest {
   systemPrompt: string;
   userPrompt: string;
@@ -12,8 +14,11 @@ export interface AiResponse {
 }
 
 export interface AiAnalysisProvider {
-  readonly id: string;
+  readonly id: AiProviderId;
   readonly label: string;
+  readonly model: string;
+  /** "provider/model": the unit that health and cooldowns are tracked by. */
+  readonly key: string;
   isConfigured(): boolean;
   complete(req: AiRequest): Promise<AiResponse>;
 }

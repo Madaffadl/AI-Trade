@@ -1,12 +1,13 @@
-import { features, riskDefaults } from '@/lib/config/env';
+import { features } from '@/lib/config/env';
 import { listProviderStatus, listRecentJobs } from '@/lib/db/repo';
-import { formatAge, formatNumber, formatUtc } from '@/lib/format';
+import { formatAge, formatUtc } from '@/lib/format';
 import { coverageMatrix } from '@/lib/providers/registry';
 import { resolveFeeds } from '@/lib/providers/news/feeds';
 import { Card, InfoNote, Stat, Table, WarningNote } from '@/components/ui';
 import { getLocale, getMessages } from '@/lib/i18n';
 import { LOCALE_NAME } from '@/lib/i18n/types';
-import { getDisplayCurrencySetting } from '@/lib/fx/service';
+import { getTradingSettings } from '@/lib/settings/trading';
+import { TradingSettingsForm } from './trading-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,12 +19,11 @@ export const dynamic = 'force-dynamic';
 export default async function SettingsPage() {
   const t = await getMessages();
   const flags = features();
-  const risk = riskDefaults();
-  const [status, jobs, locale, displayCurrency] = await Promise.all([
+  const [status, jobs, locale, trading] = await Promise.all([
     listProviderStatus(),
     listRecentJobs(8),
     getLocale(),
-    getDisplayCurrencySetting(),
+    getTradingSettings(),
   ]);
   const providers = coverageMatrix();
   const feeds = resolveFeeds();
@@ -39,14 +39,54 @@ export default async function SettingsPage() {
         <WarningNote>{t.settings.authWarning}</WarningNote>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <section id="trading">
+        <Card title={t.plan.tradingTitle} subtitle={t.plan.tradingSub}>
+          <TradingSettingsForm
+            initial={{
+              capitalIdr: trading.capitalIdr,
+              reservedIdr: trading.reservedIdr,
+              riskPercent: trading.riskPercent,
+              maxAllocationPercent: trading.maxAllocationPercent,
+              maxOpenPositions: trading.maxOpenPositions,
+              maxDailyLossPercent: trading.maxDailyLossPercent,
+              minNetRiskReward: trading.minNetRiskReward,
+              sellTaxPercent: trading.sellTaxPercent,
+              otherFeePercentPerSide: trading.otherFeePercentPerSide,
+              minVolumeIdr: trading.minVolumeIdr,
+              maxSpreadPercent: trading.maxSpreadPercent,
+              universeSize: trading.universeSize,
+              simStartCapitalIdr: trading.simStartCapitalIdr,
+            }}
+            autoSimulate={trading.autoSimulate}
+            labels={{
+              fCapital: t.plan.fCapital,
+              fReserved: t.plan.fReserved,
+              fRisk: t.plan.fRisk,
+              fAllocation: t.plan.fAllocation,
+              fMaxPositions: t.plan.fMaxPositions,
+              fDailyLoss: t.plan.fDailyLoss,
+              fMinRr: t.plan.fMinRr,
+              fTax: t.plan.fTax,
+              fOther: t.plan.fOther,
+              fMinVolume: t.plan.fMinVolume,
+              fMaxSpread: t.plan.fMaxSpread,
+              fUniverse: t.plan.fUniverse,
+              fSimCapital: t.sim.fSimCapital,
+              fAutoSimulate: t.sim.fAutoSimulate,
+              save: t.plan.save,
+              saved: t.plan.saved,
+              saveFailed: t.plan.saveFailed,
+            }}
+          />
+        </Card>
+      </section>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label={t.settings.dataMode}
           value={flags.dataMode}
           sub={flags.dataMode === 'offline' ? t.settings.dataModeOffline : t.settings.dataModeReal}
         />
-        <Stat label={t.settings.cryptoProvider} value={flags.cryptoProvider} />
-        <Stat label={t.settings.stockProviders} value={flags.stockProviders.length} sub={flags.stockProviders.join(' → ')} />
         <Stat
           label={t.settings.ai}
           value={flags.aiEnabled ? flags.aiProvider : t.settings.aiDisabled}
@@ -55,7 +95,6 @@ export default async function SettingsPage() {
         <Stat label={t.settings.newsFeeds} value={feeds.filter((f) => f.available).length} sub={t.news.statConfigured(feeds.length)} />
         <Stat label={t.settings.telegram} value={flags.telegramEnabled ? t.settings.telegramOn : t.settings.telegramOff} />
         <Stat label={t.settings.language} value={LOCALE_NAME[locale]} />
-        <Stat label={t.settings.displayCurrency} value={displayCurrency} />
       </div>
 
       <Card
@@ -91,7 +130,7 @@ export default async function SettingsPage() {
                   <dd className="inline text-ink-muted">{p.capabilities.markets.join('; ')}</dd>
                 </div>
                 <div>
-                  <dt className="inline text-ink-faint">{t.evaluation.timeframes}: </dt>
+                  <dt className="inline text-ink-faint">{t.common.timeframe}: </dt>
                   <dd className="inline text-ink-muted">{p.capabilities.timeframes.join(', ')}</dd>
                 </div>
                 <div>
@@ -161,14 +200,6 @@ export default async function SettingsPage() {
             ))}
           </Table>
         )}
-      </Card>
-
-      <Card title={t.settings.riskTitle} subtitle={t.settings.riskSub}>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <Stat label={t.settings.accountEquity} value={formatNumber(risk.accountEquity, 0)} sub="RISK_ACCOUNT_EQUITY" />
-          <Stat label={t.settings.riskPerTrade} value={`${risk.riskPercentPerTrade}%`} sub="RISK_PERCENT_PER_TRADE" />
-          <Stat label={t.settings.maxOpenRisk} value={`${risk.maxOpenRiskPercent}%`} sub="RISK_MAX_OPEN_RISK_PERCENT" />
-        </div>
       </Card>
 
       <Card title={t.settings.jobsTitle}>

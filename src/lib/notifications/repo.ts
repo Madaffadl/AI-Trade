@@ -12,6 +12,13 @@ import { newId, nowMs } from '@/lib/db/repo';
  */
 
 export type AlertKind =
+  /** A trade setup became buyable, is one trigger away, or stopped being valid. */
+  | 'setup'
+  /** A paper trade filled, exited, or expired unfilled. */
+  | 'simulation'
+  /** A holding you recorded reached its stop, target, sell-by time or exit signal. */
+  | 'position'
+  // Kinds written by earlier versions; kept so their rows still type-check.
   | 'new_signal'
   | 'signal_invalidated'
   | 'price_threshold'
@@ -71,6 +78,13 @@ export async function createAlertIfNew(a: NewAlert): Promise<{ created: boolean;
   );
   const alert = await d.get<AlertRow>('SELECT * FROM alerts WHERE id = ?', [id]);
   return { created: true, alert: alert! };
+}
+
+/** Whether an alert with this dedupe key was ever created. */
+export async function alertExists(dedupeKey: string): Promise<boolean> {
+  const d = await db();
+  const row = await d.get<{ n: number }>('SELECT COUNT(*) AS n FROM alerts WHERE dedupe_key = ?', [dedupeKey]);
+  return Number(row?.n ?? 0) > 0;
 }
 
 export async function listAlerts(limit = 50, unreadOnly = false): Promise<AlertRow[]> {

@@ -9,12 +9,6 @@ import { z } from 'zod';
  * a NEXT_PUBLIC_ variable.
  */
 
-const bool = (d: boolean) =>
-  z
-    .string()
-    .optional()
-    .transform((v) => (v === undefined || v === '' ? d : ['1', 'true', 'yes', 'on'].includes(v.toLowerCase())));
-
 const num = (d: number) =>
   z
     .string()
@@ -41,6 +35,28 @@ const list = (d: string[]) =>
             .filter(Boolean),
     );
 
+export const AI_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter', 'gemini', 'groq', 'ollama'] as const;
+export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
+
+/**
+ * AI_PROVIDER is an ordered fallback chain, e.g. "gemini,groq,ollama": the
+ * first provider is tried first and each later one only when every earlier one
+ * failed. "none" (or empty) disables AI. Free tiers change without notice, so
+ * a chain keeps commentary working when one quota runs out.
+ */
+const aiProviderChain = z
+  .string()
+  .optional()
+  .transform((v) => [
+    ...new Set(
+      (v ?? '')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s !== '' && s !== 'none'),
+    ),
+  ])
+  .pipe(z.array(z.enum(AI_PROVIDER_IDS)));
+
 const schema = z.object({
   DATABASE_URL: str(''),
   SQLITE_PATH: str('./data/ai-trade.db'),
@@ -51,37 +67,36 @@ const schema = z.object({
   AUTH_SESSION_HOURS: num(72),
   CRON_SECRET: str(''),
 
-  CRYPTO_PROVIDER: z.enum(['binance', 'coinbase']).default('binance'),
-  BINANCE_BASE_URL: str('https://api.binance.com'),
-  COINBASE_BASE_URL: str('https://api.coinbase.com'),
 
-  // twelvedata is in the default order so that simply setting
-  // TWELVEDATA_API_KEY is enough to unlock IDX - a provider with no key is
-  // skipped automatically, so listing it costs nothing when it is unconfigured.
-  STOCK_PROVIDERS: list(['nasdaq', 'alphavantage', 'twelvedata']),
-  ALPHAVANTAGE_API_KEY: str(''),
-  TWELVEDATA_API_KEY: str(''),
-  ENABLE_YAHOO_PROVIDER: bool(false),
 
-  NEWS_FEEDS: list(['fed_monetary', 'sec_8k', 'coindesk']),
-  SEC_USER_AGENT: str(''),
+  NEWS_FEEDS: list(['fed_monetary', 'coindesk']),
   NEWS_EXTRA_FEEDS: str(''),
 
-  AI_PROVIDER: z.enum(['none', 'anthropic', 'openai', 'openrouter', 'ollama']).default('none'),
-  AI_MODEL: str('claude-sonnet-5'),
+  AI_PROVIDER: aiProviderChain,
+  // Each provider names its own model(s), because a chain mixes vendors and one
+  // shared model id cannot be valid for all of them. A comma list is tried in
+  // order: free tiers overload and run out per MODEL, so a second model from
+  // the same vendor is often still answering when the first is not.
+  // OpenAI and OpenRouter have no default: their catalogues change too often
+  // to hard-code a safe choice.
   ANTHROPIC_API_KEY: str(''),
+  ANTHROPIC_MODEL: list(['claude-opus-5-5']),
   OPENAI_API_KEY: str(''),
+  OPENAI_MODEL: list([]),
   OPENROUTER_API_KEY: str(''),
+  OPENROUTER_MODEL: list([]),
+  GEMINI_API_KEY: str(''),
+  GEMINI_MODEL: list(['gemini-3.8-flash', 'gemini-3.5-flash']),
+  GROQ_API_KEY: str(''),
+  GROQ_MODEL: list(['qwen/qwen3.8-27b']),
   OLLAMA_BASE_URL: str('http://localhost:11434'),
+  OLLAMA_MODEL: list(['qwen3.8:27b']),
   AI_CACHE_MINUTES: num(180),
   AI_MAX_CALLS_PER_DAY: num(50),
 
   TELEGRAM_BOT_TOKEN: str(''),
   TELEGRAM_CHAT_ID: str(''),
 
-  RISK_ACCOUNT_EQUITY: num(10_000),
-  RISK_PERCENT_PER_TRADE: num(1),
-  RISK_MAX_OPEN_RISK_PERCENT: num(5),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -110,8 +125,6 @@ export function resetEnvCache(): void {
  */
 export type FeatureFlags = {
   dataMode: 'real' | 'offline';
-  cryptoProvider: string;
-  stockProviders: string[];
   aiEnabled: boolean;
   aiProvider: string;
   aiModel: string;
@@ -119,41 +132,58 @@ export type FeatureFlags = {
   newsFeeds: string[];
   telegramEnabled: boolean;
   authEnabled: boolean;
-  secUserAgentConfigured: boolean;
 };
+
+/** The model ids configured for a provider, in the order they are tried. */
+export function aiModelsFor(id: AiProviderId, e: Env = env()): string[] {
+  switch (id) {
+    case 'anthropic':
+      return e.ANTHROPIC_MODEL;
+    case 'openai':
+      return e.OPENAI_MODEL;
+    case 'openrouter':
+      return e.OPENROUTER_MODEL;
+    case 'gemini':
+      return e.GEMINI_MODEL;
+    case 'groq':
+      return e.GROQ_MODEL;
+    case 'ollama':
+      return e.OLLAMA_MODEL;
+  }
+}
+
+/**
+ * What a provider is still missing before it can be called, or null when it
+ * is ready. Ollama needs no key, only a reachable local server.
+ */
+export function aiProviderMissing(id: AiProviderId, e: Env = env()): string | null {
+  const key: Record<Exclude<AiProviderId, 'ollama'>, [string, string]> = {
+    anthropic: ['ANTHROPIC_API_KEY', e.ANTHROPIC_API_KEY],
+    openai: ['OPENAI_API_KEY', e.OPENAI_API_KEY],
+    openrouter: ['OPENROUTER_API_KEY', e.OPENROUTER_API_KEY],
+    gemini: ['GEMINI_API_KEY', e.GEMINI_API_KEY],
+    groq: ['GROQ_API_KEY', e.GROQ_API_KEY],
+  };
+  if (id === 'ollama') {
+    if (e.OLLAMA_BASE_URL === '') return 'OLLAMA_BASE_URL is not set';
+  } else if (key[id][1] === '') {
+    return `${key[id][0]} is not set`;
+  }
+  if (aiModelsFor(id, e).length === 0) return `${id.toUpperCase()}_MODEL is not set`;
+  return null;
+}
 
 export function features(): FeatureFlags {
   const e = env();
-  const aiKey =
-    e.AI_PROVIDER === 'anthropic'
-      ? e.ANTHROPIC_API_KEY
-      : e.AI_PROVIDER === 'openai'
-        ? e.OPENAI_API_KEY
-        : e.AI_PROVIDER === 'openrouter'
-          ? e.OPENROUTER_API_KEY
-          : e.AI_PROVIDER === 'ollama'
-            ? 'local'
-            : '';
+  const ready = e.AI_PROVIDER.filter((id) => aiProviderMissing(id, e) === null);
   return {
     dataMode: e.DATA_MODE,
-    cryptoProvider: e.CRYPTO_PROVIDER,
-    stockProviders: e.STOCK_PROVIDERS,
-    aiEnabled: e.AI_PROVIDER !== 'none' && aiKey !== '' && e.AI_MAX_CALLS_PER_DAY > 0,
-    aiProvider: e.AI_PROVIDER,
-    aiModel: e.AI_MODEL,
+    aiEnabled: ready.length > 0 && e.AI_MAX_CALLS_PER_DAY > 0,
+    aiProvider: ready.join(' → '),
+    aiModel: ready.flatMap((id) => aiModelsFor(id, e)).join(' → '),
     newsEnabled: e.NEWS_FEEDS.length > 0,
     newsFeeds: e.NEWS_FEEDS,
     telegramEnabled: e.TELEGRAM_BOT_TOKEN !== '' && e.TELEGRAM_CHAT_ID !== '',
     authEnabled: e.AUTH_PASSWORD !== '',
-    secUserAgentConfigured: e.SEC_USER_AGENT !== '',
-  };
-}
-
-export function riskDefaults() {
-  const e = env();
-  return {
-    accountEquity: e.RISK_ACCOUNT_EQUITY,
-    riskPercentPerTrade: e.RISK_PERCENT_PER_TRADE,
-    maxOpenRiskPercent: e.RISK_MAX_OPEN_RISK_PERCENT,
   };
 }

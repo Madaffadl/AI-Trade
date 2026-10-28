@@ -1,3 +1,5 @@
+> **Historical document.** Written for the earlier multi-market version (US/IDX stocks, Binance, watchlists) before the app was scoped to Indodax on 2026-10-29. Where it disagrees with the README, the README describes the current app.
+
 # Signal methodology
 
 How this app decides what to show, stated precisely enough to reproduce or
@@ -195,8 +197,11 @@ tradable unit, or the notional is below a known exchange minimum.
 **It discloses rather than invents:** when tick size or lot size is unknown, the
 UI says the size is not rounded to a tradable increment.
 
-Defaults: `RISK_ACCOUNT_EQUITY=10000`, `RISK_PERCENT_PER_TRADE=1`,
-`RISK_MAX_OPEN_RISK_PERCENT=5`. These are **configurable examples, not personal
+Equity is configured **per currency** — `RISK_EQUITY=IDR:10000000,USDT:500` —
+because sizing happens in the asset's own currency: one currency-less figure
+meant Rp10,000 on Indodax and $10,000 on Binance at the same time. A currency
+with no entry still gets R:R, but no position size. Other defaults:
+`RISK_PERCENT_PER_TRADE=1`, `RISK_MAX_OPEN_RISK_PERCENT=5`. These are **configurable examples, not personal
 financial advice.**
 
 ---

@@ -4,7 +4,7 @@ import type { Strategy, StrategyContext, StrategyOutput, RuleOutcome } from './t
 import { fmt, strengthFromRules, describeExits, describeFailures } from './types';
 
 /**
- * Strategy: Trend-following pullback entry (trend_follow_ema v1.0.0)
+ * Strategy: Trend-following pullback entry (trend_follow_ema v2.0.0)
  *
  * Idea: in a confirmed uptrend, enter after price pulls back toward the fast EMA
  * and then resumes, rather than chasing an extended move.
@@ -26,12 +26,18 @@ import { fmt, strengthFromRules, describeExits, describeFailures } from './types
  * STOP: entry - atrMultiplier * ATR, but never looser than the recent swing low.
  * TARGETS: fixed R multiples of the stop distance.
  *
+ * v2.0.0 (2026-10-29): targets moved from 1.5R / 3R to 2R / 4R. At 1.5R gross
+ * the first target could never meet the plan engine's minimum NET reward:risk
+ * of 1.5 once Indodax's costs were deducted, so every setup was rejected - a
+ * contradiction between two rules, fixed before re-validation, not a value
+ * tuned to a backtest result.
+ *
  * This is a CANDIDATE strategy. It has not been shown to be profitable; see the
  * Strategy Evaluation page for its actual measured performance.
  */
 export class TrendFollowStrategy implements Strategy {
   readonly id = 'trend_follow_ema';
-  readonly version = '1.0.0';
+  readonly version = '2.0.0';
   readonly name = 'Trend-following pullback (EMA + MACD)';
   readonly description =
     'Buys a pullback to the fast EMA inside a confirmed uptrend, confirmed by a resumption bar, RSI and MACD.';
@@ -48,8 +54,8 @@ export class TrendFollowStrategy implements Strategy {
     atrMultiplier: 1.5,
     pullbackLookback: 6,
     volumeFactor: 1.0,
-    target1R: 1.5,
-    target2R: 3,
+    target1R: 2,
+    target2R: 4,
   };
 
   evaluate(ctx: StrategyContext): StrategyOutput {

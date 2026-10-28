@@ -1,3 +1,5 @@
+> **Historical document.** Written for the earlier multi-market version (US/IDX stocks, Binance, watchlists) before the app was scoped to Indodax on 2026-10-29. Where it disagrees with the README, the README describes the current app.
+
 # Data provider evaluation
 
 All results below come from **real requests made from the development machine
@@ -207,6 +209,25 @@ redistribution.
 | OpenAI | `POST /v1/chat/completions` with `response_format: json_object` | Same |
 | OpenRouter | `POST /api/v1/chat/completions` | Same |
 | Ollama | `POST /api/chat`, `format: json` | Same — **local, zero marginal cost, no data leaves the machine** |
+| Google Gemini | OpenAI-compatible `POST /v1beta/openai/chat/completions`, `json_object` | **Verified 2026-10-28** — free tier, no card. Key valid; `gemini-3.5-flash` answered a short request, but every Flash model (3.8, 3.7, 3.5) returned HTTP 503 "high demand" for full analyses that day, one after 76 s. Free-tier prompts may be used by Google to improve its products |
+| Groq | OpenAI-compatible `POST /openai/v1/chat/completions`, strict `json_schema` | **Verified 2026-10-28** — free tier, no card. ~0.5–1 s per call. Free plan limits `qwen3.8-27b` to **1,000 output tokens per minute** and refuses any request expected to exceed it (`OTPM: Limit 1000, Requested 1398`), so output is capped at 1,000 tokens and the prompt asks for a concise answer |
+
+`AI_PROVIDER` is an ordered fallback chain (`gemini,groq,ollama`), and each
+`*_MODEL` may list several models (`GEMINI_MODEL=gemini-3.8-flash,gemini-3.5-flash`),
+because free tiers overload and run out per model. A model that errors, hits
+its quota, returns malformed JSON or fails validation hands over to the next;
+the analysis notes which model answered and why earlier ones did not.
+
+A model that reports overload or a rate limit is skipped for a while so it
+does not add its timeout to every analysis: 90 s after a 429 (per-minute
+budgets), 5 min after a 503 (overload), 10 min after a timeout, or longer if
+the provider sends `Retry-After`. If every model is cooling down, all are
+tried anyway.
+
+Why Gemini first: on Vals AI's Finance Agent v2 leaderboard (20 Oct 2026),
+`gemini-3.8-flash` scored 61.4%, second of 81 models and ahead of every paid
+Claude and GPT model listed, while being free. That benchmark measures
+analyst work on company filings, not price prediction.
 
 Set a key and run `npm run providers:verify`; it makes one tiny real call and
 reports the result. Until then the platform runs fully on deterministic analysis
@@ -236,7 +257,7 @@ is not `ok`; and **page rendering never triggers a call** — only the explicit
 | Binance / Coinbase / Nasdaq / RSS feeds | **$0**, no key |
 | Alpha Vantage, Twelve Data | **$0** on free tiers, key required |
 | Database | **$0** — SQLite file locally; any Postgres for deployment |
-| AI | **$0** with `AI_PROVIDER=none` or Ollama; otherwise per-token, capped |
+| AI | **$0** with Gemini / Groq free tiers, Ollama, or `AI_PROVIDER=none`; otherwise per-token, capped |
 | Telegram | **$0** |
 | Hosting | **$0** on a free tier, with the scheduling caveats in DEPLOYMENT.md |
 

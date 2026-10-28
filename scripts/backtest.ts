@@ -7,16 +7,16 @@ import { isTimeframe, type Timeframe } from '../src/lib/market/types';
 
 /**
  * Walk-forward backtest over candles already stored in the database.
- * Usage: npm run backtest -- BTCUSDT 1d
+ * Usage: npm run backtest -- BTCIDR 4h
  */
 async function main() {
-  const symbol = process.argv[2] ?? 'BTCUSDT';
+  const symbol = process.argv[2] ?? 'BTCIDR';
   const tfArg = process.argv[3] ?? '1d';
   if (!isTimeframe(tfArg)) throw new Error(`Unsupported timeframe: ${tfArg}`);
   const timeframe: Timeframe = tfArg;
 
   const asset = await getAssetBySymbol(symbol);
-  if (!asset) throw new Error(`Unknown asset ${symbol}. Run "npm run db:seed" first.`);
+  if (!asset) throw new Error(`Unknown asset ${symbol}. Run "npm run scan" first.`);
 
   const stored = await loadCandles(asset.id, timeframe, 5000);
   const bars = stored.candles.filter((c) => !c.isPartial);

@@ -1,3 +1,5 @@
+> **Historical document.** Written for the earlier multi-market version (US/IDX stocks, Binance, watchlists) before the app was scoped to Indodax on 2026-10-29. Where it disagrees with the README, the README describes the current app.
+
 # UI/UX review and redesign
 
 Pass run with the `ui-ux-pro-max` skill. This records what was **measured**, what

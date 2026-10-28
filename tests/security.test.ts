@@ -99,6 +99,30 @@ describe('AI response validation', () => {
     expect(r.ok).toBe(false);
   });
 
+  it('rejects profit promises written in Indonesian, not only English', () => {
+    for (const claim of [
+      'Setup ini pasti untung dalam seminggu ke depan bagi pembeli.',
+      'Ini adalah keuntungan yang dijamin untuk jangka pendek.',
+      'Strategi ini tanpa risiko karena trennya sangat kuat sekali.',
+      'Dengan level ini Anda tidak akan rugi sama sekali di posisi ini.',
+      'Ada peluang 90% harga naik ke target pertama dalam waktu dekat.',
+      'Harga punya 85% kemungkinan menembus resistance minggu ini.',
+    ]) {
+      expect(validateAiAnalysis({ ...valid, finalAssessment: claim }, []).ok, claim).toBe(false);
+    }
+  });
+
+  it('accepts cautious Indonesian commentary', () => {
+    const r = validateAiAnalysis(
+      {
+        ...valid,
+        finalAssessment: 'Bukti masih campuran; harga bisa turun dan posisi bisa rugi, jadi tunggu konfirmasi.',
+      },
+      [],
+    );
+    expect(r.ok).toBe(true);
+  });
+
   it('rejects structurally invalid responses', () => {
     expect(validateAiAnalysis({ technicalSummary: 'too short' }, []).ok).toBe(false);
     expect(validateAiAnalysis(null, []).ok).toBe(false);

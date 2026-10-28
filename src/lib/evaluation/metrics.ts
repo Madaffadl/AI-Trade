@@ -125,36 +125,3 @@ export function buyAndHoldReturnPct(firstClose: number, lastClose: number): numb
   if (!Number.isFinite(firstClose) || firstClose === 0) return null;
   return ((lastClose - firstClose) / firstClose) * 100;
 }
-
-export interface ForecastAccuracy {
-  observations: number;
-  mae: number | null;
-  rmse: number | null;
-  directionalAccuracyPct: number | null;
-}
-
-/** MAE / RMSE / directional accuracy for a forecast against realised prices. */
-export function forecastAccuracy(
-  predictions: readonly { predicted: number; actual: number; previous: number }[],
-): ForecastAccuracy {
-  if (predictions.length === 0) {
-    return { observations: 0, mae: null, rmse: null, directionalAccuracyPct: null };
-  }
-  let absSum = 0;
-  let sqSum = 0;
-  let correctDirection = 0;
-  for (const p of predictions) {
-    const err = p.predicted - p.actual;
-    absSum += Math.abs(err);
-    sqSum += err * err;
-    const predictedUp = p.predicted >= p.previous;
-    const actualUp = p.actual >= p.previous;
-    if (predictedUp === actualUp) correctDirection++;
-  }
-  return {
-    observations: predictions.length,
-    mae: absSum / predictions.length,
-    rmse: Math.sqrt(sqSum / predictions.length),
-    directionalAccuracyPct: (correctDirection / predictions.length) * 100,
-  };
-}

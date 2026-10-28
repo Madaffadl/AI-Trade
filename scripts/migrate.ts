@@ -7,6 +7,7 @@ async function main() {
   console.log(`Applying schema to ${target} ...`);
   const result = await migrate();
   console.log(`Applied ${result.statements} statements on ${result.dialect}.`);
+  for (const id of result.applied) console.log(`  + migration ${id}`);
   await (await db()).close();
 }
 

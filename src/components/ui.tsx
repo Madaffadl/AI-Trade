@@ -1,3 +1,4 @@
+import type { Messages } from '@/lib/i18n/en';
 import type { ReactNode } from 'react';
 import type { DataQuality } from '@/lib/market/types';
 import { Hint, HintMark } from './hint';
@@ -344,4 +345,18 @@ export function Table({
 
 export function Disclaimer({ text }: { text: string }) {
   return <p className="text-2xs leading-relaxed text-ink-faint">{text}</p>;
+}
+
+/** Plain-language meaning of a stored signal action, for its hover hint. */
+export function actionHint(t: Messages, action: string): string {
+  switch (action) {
+    case 'BUY':
+      return t.glossary.signalBuy;
+    case 'SELL':
+      return t.glossary.signalSell;
+    case 'HOLD':
+      return t.glossary.signalHold;
+    default:
+      return t.glossary.signalWait;
+  }
 }

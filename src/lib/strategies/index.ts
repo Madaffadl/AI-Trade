@@ -3,12 +3,14 @@ import type { Candle } from '@/lib/market/types';
 import { BreakoutStrategy } from './breakout';
 import { MeanReversionStrategy } from './mean-reversion';
 import { TrendFollowStrategy } from './trend-follow';
+import { TrendMomentumStrategy } from './trend-momentum';
 import type { IndicatorBundle, Strategy } from './types';
 
 export const STRATEGIES: Strategy[] = [
   new TrendFollowStrategy(),
   new BreakoutStrategy(),
   new MeanReversionStrategy(),
+  new TrendMomentumStrategy(),
 ];
 
 export function getStrategy(id: string): Strategy | undefined {

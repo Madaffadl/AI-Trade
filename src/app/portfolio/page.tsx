@@ -1,16 +1,14 @@
 import { listAssets } from '@/lib/db/repo';
-import { directionGlyph, formatAge, formatNumber, formatPercentSigned, formatUtc } from '@/lib/format';
+import { directionGlyph, formatAge, formatIdr, formatNumber, formatPercentSigned, formatUtc, formatWib } from '@/lib/format';
 import { buildPositionPlan, summarizePortfolio, type PositionPlan } from '@/lib/positions/plan';
 import { listPositions } from '@/lib/positions/repo';
 import { getMessages } from '@/lib/i18n';
 import { positionFormLabels, type PositionFormLabels } from '@/lib/i18n/client-labels';
 import type { Messages } from '@/lib/i18n/en';
-import { ActionBadge, Card, DataQualityBadge, EmptyState, InfoNote, Stat, Table, WarningNote } from '@/components/ui';
-import { FxDisclosure, Money } from '@/components/money';
+import { ActionBadge, actionHint, Card, DataQualityBadge, EmptyState, InfoNote, Stat, Table, WarningNote } from '@/components/ui';
 import { Hint, HintMark } from '@/components/hint';
-import { actionHint } from '@/components/scan-table';
-import { convertForDisplay, fxContext, getDisplayCurrencySetting, type FxContext } from '@/lib/fx/service';
 import { ClosePositionForm, RecordBuyForm } from './position-forms';
+import { TradeTabs } from '@/components/plan/trade-tabs';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,8 +21,6 @@ export default async function PortfolioPage() {
 
   const t = await getMessages();
   const formLabels = positionFormLabels(t);
-  const display = await getDisplayCurrencySetting();
-  const fx = await fxContext(display);
   const plans = await Promise.all(open.map((p) => buildPositionPlan(p)));
   const summary = summarizePortfolio(plans);
   const byId = new Map(plans.map((p) => [p.positionId, p]));
@@ -42,6 +38,7 @@ export default async function PortfolioPage() {
 
   return (
     <div className="space-y-5">
+      <TradeTabs active="real" labels={{ sim: t.sim.tabSim, real: t.sim.tabReal }} />
       <div>
         <h1 className="text-lg font-semibold text-ink">{t.portfolio.title}</h1>
         <p className="text-2xs text-ink-muted">{t.portfolio.subtitle}</p>
@@ -113,7 +110,6 @@ export default async function PortfolioPage() {
                   venueLabel={t.venue[p.venue as keyof typeof t.venue] ?? p.venue}
                   entryAtMs={p.entry_at_ms}
                   notes={p.notes}
-                  fx={fx}
                   t={t}
                   formLabels={formLabels}
                 />
@@ -149,10 +145,10 @@ export default async function PortfolioPage() {
                 <td className="px-2 py-2 text-2xs text-ink-muted">{t.venue[p.venue as keyof typeof t.venue] ?? p.venue}</td>
                 <td className="num px-2 py-2 text-ink-muted">{formatNumber(p.quantity, 6)}</td>
                 <td className="px-2 py-2 text-ink-muted">
-                  <Money money={convertForDisplay(p.entry_price, p.currency, fx)} />
+                  {formatIdr(p.entry_price)}
                 </td>
                 <td className="px-2 py-2 text-ink-muted">
-                  <Money money={convertForDisplay(p.exit_price, p.currency, fx)} />
+                  {formatIdr(p.exit_price)}
                 </td>
                 <td className="px-2 py-2 text-2xs text-ink-faint">
                   {p.exit_at_ms ? t.portfolio.days(Math.round((p.exit_at_ms - p.entry_at_ms) / 86_400_000)) : '—'}
@@ -170,8 +166,6 @@ export default async function PortfolioPage() {
         )}
       </Card>
 
-      <FxDisclosure target={display} providerUpdatedAtMs={fx.rates?.providerUpdatedAtMs ?? null} />
-
       <InfoNote>{t.portfolio.footer}</InfoNote>
     </div>
   );
@@ -182,7 +176,6 @@ function PositionCard({
   venueLabel,
   entryAtMs,
   notes,
-  fx,
   t,
   formLabels,
 }: {
@@ -190,7 +183,6 @@ function PositionCard({
   venueLabel: string;
   entryAtMs: number;
   notes: string | null;
-  fx: FxContext;
   t: Messages;
   formLabels: PositionFormLabels;
 }) {
@@ -220,11 +212,16 @@ function PositionCard({
       </div>
 
       <p className="mt-2 text-xs text-ink-muted">{plan.actionReason}</p>
+      {plan.sellByMs !== null && (
+        <p className={`mt-1 text-xs ${plan.sellByPassed ? 'font-semibold text-down' : 'text-ink-muted'}`}>
+          {plan.sellByPassed ? `▼ ${t.sim.realSellByPassed}` : `${t.sim.realSellBy}: ${formatWib(plan.sellByMs)}`}
+        </p>
+      )}
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label={t.common.quantity} value={formatNumber(plan.quantity, 6)} hint={t.glossary.lotSize} />
-        <Stat label={t.portfolio.entryPrice} value={<Money money={convertForDisplay(plan.entryPrice, plan.currency, fx)} />} hint={t.glossary.entry} />
-        <Stat label={t.portfolio.currentPrice} value={<Money money={convertForDisplay(plan.currentPrice, plan.currency, fx)} />} />
+        <Stat label={t.portfolio.entryPrice} value={formatIdr(plan.entryPrice)} hint={t.glossary.entry} />
+        <Stat label={t.portfolio.currentPrice} value={formatIdr(plan.currentPrice)} />
         <Stat label={t.portfolio.cost} value={formatNumber(plan.costBasis, 0)} sub={plan.currency} hint={t.glossary.costBasis} />
         <Stat label={t.portfolio.currentValue} value={formatNumber(plan.marketValue, 0)} sub={plan.currency} />
         <Stat
@@ -242,7 +239,6 @@ function PositionCard({
           hint={t.glossary.stopLoss}
           price={plan.stopLoss}
           currency={plan.currency}
-          fx={fx}
           distance={plan.stopDistancePct === null ? null : t.portfolio.belowCurrent(plan.stopDistancePct.toFixed(2))}
           amount={plan.lossIfStopped}
           tone="down"
@@ -253,7 +249,6 @@ function PositionCard({
           hint={t.glossary.takeProfit}
           price={plan.takeProfit1}
           currency={plan.currency}
-          fx={fx}
           distance={plan.tp1DistancePct === null ? null : t.portfolio.toGo(plan.tp1DistancePct.toFixed(2))}
           amount={plan.profitAtTp1}
           tone="up"
@@ -264,7 +259,6 @@ function PositionCard({
           hint={t.glossary.takeProfit}
           price={plan.takeProfit2}
           currency={plan.currency}
-          fx={fx}
           distance={null}
           amount={plan.profitAtTp2}
           tone="up"
@@ -340,7 +334,6 @@ function LevelBox({
   distance,
   amount,
   tone,
-  fx,
   t,
   hint,
 }: {
@@ -350,7 +343,6 @@ function LevelBox({
   distance: string | null;
   amount: number | null;
   tone: 'up' | 'down';
-  fx: FxContext;
   t: Messages;
   hint: string;
 }) {
@@ -361,7 +353,7 @@ function LevelBox({
         <HintMark text={hint} />
       </p>
       <p className={`mt-0.5 text-sm font-semibold ${tone === 'up' ? 'text-up' : 'text-down'}`}>
-        {price === null ? t.portfolio.notSet : <Money money={convertForDisplay(price, currency, fx)} />}
+        {price === null ? t.portfolio.notSet : formatIdr(price)}
       </p>
       {distance && <p className="text-2xs text-ink-muted">{distance}</p>}
       {amount !== null && (

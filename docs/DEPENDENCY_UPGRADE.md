@@ -1,3 +1,5 @@
+> **Historical document.** Written for the earlier multi-market version (US/IDX stocks, Binance, watchlists) before the app was scoped to Indodax on 2026-10-29. Where it disagrees with the README, the README describes the current app.
+
 # Dependency upgrade — 2026-10-27
 
 **Result: `npm audit` 7 findings (2 critical, 3 high, 2 moderate) → 0.**

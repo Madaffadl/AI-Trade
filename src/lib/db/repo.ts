@@ -76,9 +76,11 @@ export async function upsertAsset(a: Omit<AssetRef, 'id'> & { id?: string }): Pr
      ON CONFLICT (exchange_id, symbol) DO UPDATE SET
        display_name = excluded.display_name,
        currency = excluded.currency,
-       tick_size = excluded.tick_size,
-       lot_size = excluded.lot_size,
-       min_notional = excluded.min_notional,
+       -- A caller that does not know the exchange increments (e.g. adding to
+       -- the watchlist from a search result) must not erase known ones.
+       tick_size = COALESCE(excluded.tick_size, assets.tick_size),
+       lot_size = COALESCE(excluded.lot_size, assets.lot_size),
+       min_notional = COALESCE(excluded.min_notional, assets.min_notional),
        active = 1`,
     [
       id,
@@ -152,17 +154,22 @@ export async function saveCandles(
 ): Promise<number> {
   if (candles.length === 0) return 0;
   const d = await db();
-  for (const c of candles) {
+  // Multi-row upserts: one statement per 200 candles instead of one per
+  // candle. Scanning ~25 pairs on three timeframes writes thousands of rows
+  // per cycle, and per-row statements made that the slowest part of a scan.
+  const CHUNK = 200;
+  for (let i = 0; i < candles.length; i += CHUNK) {
+    const chunk = candles.slice(i, i + CHUNK);
     await d.run(
       `INSERT INTO market_candles
          (asset_id, timeframe, open_time_ms, close_time_ms, open, high, low, close, volume, provider, fetched_at_ms, is_partial, quality)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')
+       VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')").join(', ')}
        ON CONFLICT (asset_id, timeframe, open_time_ms) DO UPDATE SET
          close_time_ms = excluded.close_time_ms,
          open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close,
          volume = excluded.volume, provider = excluded.provider,
          fetched_at_ms = excluded.fetched_at_ms, is_partial = excluded.is_partial`,
-      [
+      chunk.flatMap((c) => [
         assetId,
         timeframe,
         c.openTimeMs,
@@ -175,10 +182,23 @@ export async function saveCandles(
         provider,
         fetchedAtMs,
         c.isPartial ? 1 : 0,
-      ],
+      ]),
     );
   }
   return candles.length;
+}
+
+/** Earliest and latest stored candle for an asset and timeframe. */
+export async function candleBounds(
+  assetId: string,
+  timeframe: Timeframe,
+): Promise<{ minOpenMs: number | null; maxOpenMs: number | null; count: number }> {
+  const d = await db();
+  const row = await d.get<{ mn: number | null; mx: number | null; n: number }>(
+    'SELECT MIN(open_time_ms) AS mn, MAX(open_time_ms) AS mx, COUNT(*) AS n FROM market_candles WHERE asset_id = ? AND timeframe = ?',
+    [assetId, timeframe],
+  );
+  return { minOpenMs: row?.mn ?? null, maxOpenMs: row?.mx ?? null, count: Number(row?.n ?? 0) };
 }
 
 export interface StoredSeries {
@@ -212,60 +232,6 @@ export async function loadCandles(assetId: string, timeframe: Timeframe, limit: 
 }
 
 // ---------------------------------------------------------------------------
-// Watchlists
-// ---------------------------------------------------------------------------
-
-export async function ensureDefaultWatchlist(): Promise<string> {
-  const d = await db();
-  const row = await d.get<{ id: string }>('SELECT id FROM watchlists WHERE is_default = 1 LIMIT 1');
-  if (row) return row.id;
-  const id = newId();
-  await d.run('INSERT INTO watchlists (id, name, is_default, created_at_ms) VALUES (?, ?, 1, ?)', [
-    id,
-    'My Watchlist',
-    nowMs(),
-  ]);
-  return id;
-}
-
-export interface WatchlistEntry extends AssetRef {
-  tradingStyle: string;
-  addedAtMs: number;
-  notes: string | null;
-}
-
-export async function listWatchlist(watchlistId: string): Promise<WatchlistEntry[]> {
-  const d = await db();
-  const rows = await d.all<AssetRow & { trading_style: string; added_at_ms: number; notes: string | null }>(
-    `SELECT a.*, w.trading_style, w.added_at_ms, w.notes
-     FROM watchlist_assets w JOIN assets a ON a.id = w.asset_id
-     WHERE w.watchlist_id = ? ORDER BY a.asset_class, a.symbol`,
-    [watchlistId],
-  );
-  return rows.map((r) => ({
-    ...toAssetRef(r),
-    tradingStyle: r.trading_style,
-    addedAtMs: r.added_at_ms,
-    notes: r.notes,
-  }));
-}
-
-export async function addToWatchlist(watchlistId: string, assetId: string, tradingStyle: string): Promise<void> {
-  const d = await db();
-  await d.run(
-    `INSERT INTO watchlist_assets (watchlist_id, asset_id, trading_style, added_at_ms)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (watchlist_id, asset_id) DO UPDATE SET trading_style = excluded.trading_style`,
-    [watchlistId, assetId, tradingStyle, nowMs()],
-  );
-}
-
-export async function removeFromWatchlist(watchlistId: string, assetId: string): Promise<void> {
-  const d = await db();
-  await d.run('DELETE FROM watchlist_assets WHERE watchlist_id = ? AND asset_id = ?', [watchlistId, assetId]);
-}
-
-// ---------------------------------------------------------------------------
 // Provider status
 // ---------------------------------------------------------------------------
 
@@ -293,6 +259,7 @@ export async function recordProviderOk(provider: string, operation: string): Pro
      ON CONFLICT (provider, operation) DO UPDATE SET
        last_ok_ms = excluded.last_ok_ms,
        consecutive_failures = 0,
+       rate_limited_until_ms = NULL,
        calls_today = CASE WHEN provider_status.calls_day_key = excluded.calls_day_key
                           THEN provider_status.calls_today + 1 ELSE 1 END,
        calls_day_key = excluded.calls_day_key`,
@@ -322,6 +289,16 @@ export async function recordProviderError(
        rate_limited_until_ms = excluded.rate_limited_until_ms`,
     [provider, operation, ts, error.slice(0, 400), key, rateLimitedUntilMs ?? null],
   );
+}
+
+/** Providers still cooling down for an operation, mapped to when they may be retried. */
+export async function providerCooldowns(operation: string, now = nowMs()): Promise<Map<string, number>> {
+  const d = await db();
+  const rows = await d.all<{ provider: string; rate_limited_until_ms: number }>(
+    'SELECT provider, rate_limited_until_ms FROM provider_status WHERE operation = ? AND rate_limited_until_ms > ?',
+    [operation, now],
+  );
+  return new Map(rows.map((r) => [r.provider, Number(r.rate_limited_until_ms)]));
 }
 
 export async function listProviderStatus(): Promise<ProviderStatusRow[]> {

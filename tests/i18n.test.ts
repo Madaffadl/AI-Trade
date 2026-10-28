@@ -97,15 +97,7 @@ describe('translation quality guards', () => {
     'venue.pluang',
     'venue.stockbit',
     'common.timeframe',
-    'common.crypto',
-    'common.volume',
     'common.status',
-    'common.data',
-    'scanner.bullish',
-    'scanner.bearish',
-    'markets.searchPlaceholder',
-    'markets.sortChange',
-    'evaluation.timeframes',
     'settings.telegram',
     'settings.ai',
     'alerts.statTelegram',
@@ -165,13 +157,10 @@ describe('translation quality guards', () => {
     }
   });
 
-  it('keeps the trading labels untranslated, because they are the stored values', () => {
-    // BUY/SELL/HOLD/WAIT are persisted in the database and rendered as badges;
-    // translating them would break the mapping to stored data.
-    const labelsText = `${en.signals.labelsBody} ${id.signals.labelsBody}`;
-    for (const action of ['BUY', 'SELL', 'HOLD', 'WAIT']) {
-      expect(en.signals.labelsBody).toContain(action);
-    }
-    expect(labelsText.length).toBeGreaterThan(0);
+  it('names the action explicitly in every decision headline, in both languages', () => {
+    expect(en.plan.decisionBuyNow('BTC/IDR')).toBe('BUY NOW: BTC/IDR');
+    expect(id.plan.decisionBuyNow('BTC/IDR')).toBe('BELI SEKARANG: BTC/IDR');
+    expect(en.plan.decisionNoTrade).toMatch(/^NO TRADE/);
+    expect(id.plan.decisionNoTrade).toMatch(/^TIDAK ADA TRADE/);
   });
 });

@@ -98,3 +98,52 @@ export function directionClass(value: number | null | undefined): string {
   if (value < 0) return 'text-down';
   return 'text-flat';
 }
+
+/**
+ * Rupiah, Indonesian style: "Rp1.465.298.000". Prices under Rp100 (micro-priced
+ * coins such as PEPE) keep four significant digits instead of rounding to 0.
+ */
+export function formatIdr(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  const digits = abs >= 100 ? { maximumFractionDigits: 0 } : { maximumSignificantDigits: 4 };
+  return `${value < 0 ? '−' : ''}Rp${abs.toLocaleString('id-ID', digits)}`;
+}
+
+/** Signed Rupiah with a direction glyph, so colour is never the only cue: "▲ +Rp12.500". */
+export function formatIdrSigned(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const glyph = directionGlyph(value);
+  const body = `${value > 0 ? '+' : value < 0 ? '−' : ''}${formatIdr(Math.abs(value))}`;
+  return glyph ? `${glyph} ${body}` : body;
+}
+
+/** Coin quantity with up to 8 decimals, Indonesian separators. */
+export function formatQuantity(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return value.toLocaleString('id-ID', { maximumFractionDigits: 8 });
+}
+
+/**
+ * Wall-clock time in Indonesia (WIB), labelled as such. Trading decisions are
+ * made on the Indonesian clock, so plan deadlines are shown in WIB rather than
+ * the UTC used for data provenance elsewhere.
+ */
+export function formatWib(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+  const s = new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(ms);
+  return `${s} WIB`;
+}
+
+/** Calendar date in Indonesia, with the year: "14 Okt 2025". */
+export function formatDateWib(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+  return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', year: 'numeric' }).format(ms);
+}

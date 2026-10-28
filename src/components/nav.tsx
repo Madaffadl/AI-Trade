@@ -4,28 +4,19 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Locale } from '@/lib/i18n/types';
-import { CurrencyToggle } from './currency-toggle';
 import { LanguageToggle } from './language-toggle';
 
 export interface NavLabels {
   brand: string;
   personal: string;
   overview: string;
-  markets: string;
-  scanner: string;
-  watchlist: string;
   portfolio: string;
-  signals: string;
   news: string;
-  forecasts: string;
   history: string;
-  evaluation: string;
   settings: string;
   alerts: string;
   menu: string;
   toggleNav: string;
-  currencyTitle: string;
-  currencyNative: string;
   languageTitle: string;
   more: string;
   moreTitle: string;
@@ -36,7 +27,9 @@ export interface NavLabels {
   skipToContent: string;
   unreadAlerts: string;
   close: string;
-  recommendations: string;
+  opportunities: string;
+  simulations: string;
+  performance: string;
 }
 
 /**
@@ -68,23 +61,23 @@ function Icon({ d }: { d: string }) {
 
 const PATHS = {
   overview: 'M3 13h4l3 6 4-14 3 8h4',
-  signals: 'M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5',
   portfolio: 'M3 7h18v12H3zM3 7l2-3h14l2 3M9 12h6',
-  markets: 'M4 19V9m5 10V5m5 14v-7m5 7V7',
   // Scanner needs its own glyph: it previously reused the signals icon, which
   // gave two different destinations the same mark in a five-item bottom bar.
   scanner: 'M11 4a7 7 0 100 14 7 7 0 000-14zM20 20l-4-4',
   more: 'M5 12h.01M12 12h.01M19 12h.01',
+  history: 'M12 7v5l3 3M12 3a9 9 0 100 18 9 9 0 000-18z',
+  performance: 'M4 19V9m5 10V5m5 14v-7m5 7V7',
+  simulation: 'M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3M7.5 15h9',
+  settings: 'M12 9a3 3 0 100 6 3 3 0 000-6zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1',
 };
 
 export function Nav({
   unreadCount,
-  currency,
   locale,
   labels,
 }: {
   unreadCount: number;
-  currency: string;
   locale: Locale;
   labels: NavLabels;
 }) {
@@ -109,38 +102,22 @@ export function Nav({
    * adaptive-navigation rule (sidebar/inline at >=1024px, bottom nav on small
    * screens) and the <=5 bottom-nav limit.
    */
+  // Indodax-first (2026-10-29): the primary bar follows the decision loop -
+  // what to do now -> every candidate -> what I hold -> how it went - and the
+  // analyst tools from the multi-market version live under "More".
   const primary = [
     { href: '/', label: labels.overview, icon: PATHS.overview },
-    { href: '/signals', label: labels.signals, icon: PATHS.signals },
-    { href: '/portfolio', label: labels.portfolio, icon: PATHS.portfolio },
-    { href: '/scanner', label: labels.scanner, icon: PATHS.scanner },
-    { href: '/markets', label: labels.markets, icon: PATHS.markets },
+    { href: '/opportunities', label: labels.opportunities, icon: PATHS.scanner },
+    { href: '/simulations', label: labels.simulations, icon: PATHS.simulation },
+    { href: '/performance', label: labels.performance, icon: PATHS.performance },
+    { href: '/settings', label: labels.settings, icon: PATHS.settings },
   ];
 
   const groups: { title: string; links: { href: string; label: string }[] }[] = [
-    {
-      title: labels.groupTrade,
-      links: [
-        { href: '/watchlist', label: labels.watchlist },
-        { href: '/recommendations', label: labels.recommendations },
-        { href: '/alerts', label: labels.alerts },
-      ],
-    },
-    {
-      title: labels.groupResearch,
-      links: [
-        { href: '/news', label: labels.news },
-        { href: '/forecasts', label: labels.forecasts },
-      ],
-    },
-    {
-      title: labels.groupReview,
-      links: [
-        { href: '/history', label: labels.history },
-        { href: '/evaluation', label: labels.evaluation },
-        { href: '/settings', label: labels.settings },
-      ],
-    },
+    { title: labels.groupTrade, links: [{ href: '/portfolio', label: labels.portfolio }, { href: '/alerts', label: labels.alerts }] },
+    { title: labels.groupResearch, links: [{ href: '/news', label: labels.news }] },
+    // Settings is also primary; listed here because the mobile bar shows only the first four.
+    { title: labels.groupReview, links: [{ href: '/history', label: labels.history }, { href: '/settings', label: labels.settings }] },
   ];
 
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
@@ -262,7 +239,6 @@ export function Nav({
 
           <div className="ml-auto flex items-center gap-2">
             <LanguageToggle current={locale} title={labels.languageTitle} />
-            <CurrencyToggle current={currency} title={labels.currencyTitle} nativeLabel={labels.currencyNative} />
             <Link
               href="/alerts"
               className="relative inline-flex min-h-[32px] items-center rounded border border-line px-2.5 py-1 text-2xs text-ink-muted transition-colors hover:border-line-strong hover:text-ink"

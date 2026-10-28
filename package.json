@@ -4,8 +4,11 @@
   "private": true,
   "description": "Personal AI Trading Intelligence Platform",
   "scripts": {
+    "predev": "npm run db:migrate --silent",
     "dev": "next dev",
+    "dev:all": "npm run db:migrate --silent && tsx --no-deprecation scripts/dev-all.ts",
     "build": "next build",
+    "prestart": "npm run db:migrate --silent",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -17,7 +20,10 @@
     "worker": "tsx --conditions=react-server --no-deprecation scripts/worker.ts",
     "refresh": "tsx --conditions=react-server --no-deprecation scripts/refresh-once.ts",
     "evaluate": "tsx --conditions=react-server --no-deprecation scripts/evaluate.ts",
-    "backtest": "tsx --conditions=react-server --no-deprecation scripts/backtest.ts"
+    "backtest": "tsx --conditions=react-server --no-deprecation scripts/backtest.ts",
+    "scan:universe": "tsx --conditions=react-server --no-deprecation scripts/scan-universe.ts",
+    "scan": "tsx --conditions=react-server --no-deprecation scripts/scan.ts",
+    "validate": "tsx --conditions=react-server --no-deprecation scripts/validate.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.8",

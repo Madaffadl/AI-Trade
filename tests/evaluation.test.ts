@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateSignal } from '@/lib/evaluation/outcomes';
-import { buyAndHoldReturnPct, computeMetrics, forecastAccuracy } from '@/lib/evaluation/metrics';
+import { buyAndHoldReturnPct, computeMetrics } from '@/lib/evaluation/metrics';
 import { runBacktest, walkForwardWindows } from '@/lib/evaluation/backtest';
-import { evaluateForecastModels, NAIVE, DRIFT } from '@/lib/forecast/baselines';
 import { STRATEGIES } from '@/lib/strategies';
 import type { Candle } from '@/lib/market/types';
 import { TIMEFRAME_MS } from '@/lib/market/types';
@@ -133,20 +132,6 @@ describe('computeMetrics', () => {
   });
 });
 
-describe('forecastAccuracy', () => {
-  it('computes MAE, RMSE and directional accuracy', () => {
-    const preds = [
-      { predicted: 101, actual: 102, previous: 100 }, // up / up -> correct
-      { predicted: 99, actual: 103, previous: 100 }, // down / up -> wrong
-    ];
-    const a = forecastAccuracy(preds);
-    expect(a.observations).toBe(2);
-    expect(a.mae).toBeCloseTo((1 + 4) / 2, 10);
-    expect(a.rmse).toBeCloseTo(Math.sqrt((1 + 16) / 2), 10);
-    expect(a.directionalAccuracyPct).toBeCloseTo(50, 10);
-  });
-});
-
 describe('backtest no-lookahead contract', () => {
   /**
    * The decisive test: corrupting bars AFTER the point a signal was generated
@@ -212,41 +197,6 @@ describe('backtest no-lookahead contract', () => {
     expect(windows[0]).toEqual({ start: 0, end: 40 });
     for (let i = 1; i < windows.length; i++) {
       expect(windows[i]!.start).toBeGreaterThan(windows[i - 1]!.start);
-    }
-  });
-});
-
-describe('forecast baselines', () => {
-  it('the naive model predicts the last close exactly', () => {
-    expect(NAIVE.predict([10, 20, 30])).toBe(30);
-  });
-
-  it('the drift model extends the average per-bar change', () => {
-    // 0..100 over 101 points -> drift of 1 per bar -> predicts 101.
-    expect(DRIFT.predict(Array.from({ length: 101 }, (_, i) => i))).toBeCloseTo(101, 10);
-  });
-
-  it('evaluates every model against the naive baseline out-of-sample', () => {
-    const bars: Candle[] = Array.from({ length: 200 }, (_, i) => {
-      const p = 100 + Math.sin(i / 9) * 10;
-      return {
-        openTimeMs: i * DAY,
-        closeTimeMs: (i + 1) * DAY,
-        open: p,
-        high: p * 1.01,
-        low: p * 0.99,
-        close: p,
-        volume: 100,
-        isPartial: false,
-      };
-    });
-    const results = evaluateForecastModels(bars, 50);
-    const naive = results.find((r) => r.modelId === 'naive')!;
-    expect(naive.rmseVsNaive).toBeCloseTo(1, 10);
-    expect(naive.verdict).toMatch(/baseline/i);
-    for (const r of results) {
-      expect(r.accuracy.observations).toBeGreaterThan(0);
-      expect(r.verdict.length).toBeGreaterThan(10);
     }
   });
 });

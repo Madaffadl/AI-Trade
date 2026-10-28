@@ -1,8 +1,8 @@
 import 'server-only';
 import { env } from '@/lib/config/env';
-import { loadCandles, recordProviderError, recordProviderOk, saveCandles } from '@/lib/db/repo';
+import { loadCandles, providerCooldowns, recordProviderError, recordProviderOk, saveCandles } from '@/lib/db/repo';
 import { ProviderError } from '@/lib/providers/http';
-import { providerSymbol, selectProvider } from '@/lib/providers/registry';
+import { selectProvider } from '@/lib/providers/registry';
 import { assessFreshness, type FreshnessResult } from './freshness';
 import { markPartial } from './normalize';
 import { sessionState } from './sessions';
@@ -60,8 +60,7 @@ export async function getSeries(asset: AssetRef, timeframe: Timeframe, options: 
   const limit = options.limit ?? 300;
   const minBars = options.minBars ?? 50;
   const now = Date.now();
-  const holidays = await holidayList();
-  const session = sessionState(asset.exchangeId, now, holidays);
+  const session = sessionState(asset.exchangeId);
 
   const cached = await loadCandles(asset.id, timeframe, limit);
   const cacheAge = cached.fetchedAtMs === null ? Infinity : now - cached.fetchedAtMs;
@@ -118,9 +117,37 @@ export async function getSeries(asset: AssetRef, timeframe: Timeframe, options: 
   }
 
   const provider = selection.provider;
+
+  // A provider that recently rate-limited us is left alone until its
+  // cooldown ends; hammering it would only extend the ban. Stored candles are
+  // served instead, labelled as such, exactly like a failed fetch.
+  const coolingUntil = (await providerCooldowns('candles', now)).get(provider.id);
+  if (coolingUntil !== undefined) {
+    const why = `${provider.id} is cooling down after a rate limit until ${new Date(coolingUntil).toISOString()}.`;
+    if (cached.candles.length > 0) {
+      return finalize(asset, timeframe, cached.candles, cached.provider ?? 'cache', cached.fetchedAtMs, {
+        fromCache: true,
+        providerError: why,
+        session,
+        minBars,
+        now,
+        extraNotes: [`${why} Showing the last stored candles.`],
+      });
+    }
+    return {
+      series: null,
+      freshness: null,
+      fromCache: false,
+      providerError: why,
+      session,
+      quality: 'unavailable',
+      notes: [why],
+      remedy: 'Wait for the cooldown to end; the next refresh retries automatically.',
+    };
+  }
+
   try {
-    const symbol = providerSymbol(asset.symbol, asset.exchangeId, provider.id);
-    const fresh = await provider.fetchCandles({ symbol, timeframe, limit, signal: options.signal });
+    const fresh = await provider.fetchCandles({ symbol: asset.symbol, timeframe, limit, signal: options.signal });
     await recordProviderOk(provider.id, 'candles');
     await saveCandles(asset.id, timeframe, fresh.candles, provider.id, fresh.fetchedAtMs);
 
@@ -222,9 +249,4 @@ function finalize(
     notes,
     remedy: ctx.remedy ?? null,
   };
-}
-
-async function holidayList(): Promise<string[]> {
-  const { getSetting } = await import('@/lib/db/repo');
-  return getSetting<string[]>('market.holidays', []);
 }

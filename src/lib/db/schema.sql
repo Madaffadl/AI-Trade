@@ -81,26 +81,6 @@ CREATE TABLE IF NOT EXISTS market_candles (
 CREATE INDEX IF NOT EXISTS idx_candles_lookup ON market_candles (asset_id, timeframe, open_time_ms DESC);
 
 -- ---------------------------------------------------------------------------
--- Watchlists
--- ---------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS watchlists (
-  id              TEXT PRIMARY KEY,
-  name            TEXT NOT NULL UNIQUE,
-  is_default      INTEGER NOT NULL DEFAULT 0,
-  created_at_ms   BIGINT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS watchlist_assets (
-  watchlist_id    TEXT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
-  asset_id        TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  trading_style   TEXT NOT NULL DEFAULT 'swing',  -- scalping|day|swing|position
-  added_at_ms     BIGINT NOT NULL,
-  notes           TEXT,
-  PRIMARY KEY (watchlist_id, asset_id)
-);
-
--- ---------------------------------------------------------------------------
 -- News and events
 -- ---------------------------------------------------------------------------
 
@@ -291,17 +271,6 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
   UNIQUE (alert_id, channel)
 );
 
-CREATE TABLE IF NOT EXISTS price_thresholds (
-  id              TEXT PRIMARY KEY,
-  asset_id        TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-  direction       TEXT NOT NULL,               -- above|below
-  price           DOUBLE PRECISION NOT NULL,
-  active          INTEGER NOT NULL DEFAULT 1,
-  created_at_ms   BIGINT NOT NULL,
-  triggered_at_ms BIGINT,
-  UNIQUE (asset_id, direction, price)
-);
-
 -- ---------------------------------------------------------------------------
 -- Operations
 -- ---------------------------------------------------------------------------
@@ -338,6 +307,17 @@ CREATE TABLE IF NOT EXISTS job_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_recent ON job_runs (job, started_at_ms DESC);
+
+-- One row per job that must not run twice at once (the scan and the live
+-- monitor both move simulations; the worker and the "Refresh now" button can
+-- start them from different processes). A row past `expires_at_ms` belongs to
+-- a process that died and may be taken over.
+CREATE TABLE IF NOT EXISTS job_locks (
+  name            TEXT PRIMARY KEY,
+  holder          TEXT NOT NULL,
+  acquired_at_ms  BIGINT NOT NULL,
+  expires_at_ms   BIGINT NOT NULL
+);
 
 -- ---------------------------------------------------------------------------
 -- Positions (holdings the user actually bought at a real venue)
@@ -390,33 +370,163 @@ CREATE INDEX IF NOT EXISTS idx_positions_open ON positions (status, asset_id);
 CREATE INDEX IF NOT EXISTS idx_positions_recent ON positions (entry_at_ms DESC);
 
 -- ---------------------------------------------------------------------------
--- Instrument catalogue
+-- Schema migrations
 --
--- A cached list of everything the configured providers can actually serve, so
--- the user can browse and choose instead of being limited to a seeded
--- watchlist. Refreshed on demand - it is reference data, not market data, and
--- re-fetching thousands of rows on every page view would be wasteful.
+-- One row per applied step from src/lib/db/migrations.ts: changes that
+-- CREATE ... IF NOT EXISTS cannot express (a new column on an existing table,
+-- a one-off data correction). Each step runs once per database.
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS instrument_catalog (
-  exchange_id     TEXT NOT NULL,
-  symbol          TEXT NOT NULL,
-  display_name    TEXT NOT NULL,
-  asset_class     TEXT NOT NULL,
-  currency        TEXT NOT NULL,
-  provider        TEXT NOT NULL,
-  -- Nullable on purpose: most providers do not supply these, and a missing
-  -- value must stay missing rather than be guessed at.
-  last_price      DOUBLE PRECISION,
-  market_cap      DOUBLE PRECISION,
-  change_pct      DOUBLE PRECISION,
-  volume          DOUBLE PRECISION,
-  tick_size       DOUBLE PRECISION,
-  lot_size        DOUBLE PRECISION,
-  min_notional    DOUBLE PRECISION,
-  fetched_at_ms   BIGINT NOT NULL,
-  PRIMARY KEY (exchange_id, symbol)
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id              TEXT PRIMARY KEY,
+  applied_at_ms   BIGINT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_catalog_class ON instrument_catalog (asset_class, exchange_id);
-CREATE INDEX IF NOT EXISTS idx_catalog_cap ON instrument_catalog (market_cap);
+-- ---------------------------------------------------------------------------
+-- Indodax trading plans
+--
+-- scan_runs: one row per scan of the Indodax universe, with the decision the
+-- home screen shows (BUY_NOW / WAIT_FOR_ENTRY / NO_TRADE / DATA_UNAVAILABLE /
+-- DAILY_STOP / POSITIONS_FULL) and a per-pair summary of why.
+--
+-- trade_setups: one row per strategy x pair x entry timeframe x signal bar.
+-- `plan_json` is the complete deterministic plan (levels, costs, sizing,
+-- holding period); `state` is what it means against the live order book and
+-- is re-evaluated on every scan. Pages read these rows; they never call the
+-- exchange themselves.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS scan_runs (
+  id                TEXT PRIMARY KEY,
+  started_at_ms     BIGINT NOT NULL,
+  finished_at_ms    BIGINT,
+  engine_version    TEXT NOT NULL,
+  status            TEXT NOT NULL,               -- running | ok | partial | error
+  decision          TEXT NOT NULL,
+  top_setup_id      TEXT,
+  universe_size     INTEGER NOT NULL DEFAULT 0,
+  pairs_with_data   INTEGER NOT NULL DEFAULT 0,
+  summary_json      TEXT NOT NULL,
+  error             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_runs_recent ON scan_runs (started_at_ms);
+
+CREATE TABLE IF NOT EXISTS trade_setups (
+  id                  TEXT PRIMARY KEY,
+  setup_key           TEXT NOT NULL UNIQUE,
+  asset_id            TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  strategy_id         TEXT NOT NULL,
+  strategy_version    TEXT NOT NULL,
+  engine_version      TEXT NOT NULL,
+  timeframe           TEXT NOT NULL,
+  context_timeframe   TEXT NOT NULL,
+  kind                TEXT NOT NULL,             -- triggered | pending
+  state               TEXT NOT NULL,
+  state_reason        TEXT NOT NULL,
+  candle_open_ms      BIGINT NOT NULL,           -- the bar that produced the setup
+  trigger_price       DOUBLE PRECISION,
+  entry_planned       DOUBLE PRECISION NOT NULL,
+  entry_max           DOUBLE PRECISION NOT NULL,
+  stop_loss           DOUBLE PRECISION NOT NULL,
+  take_profit_1       DOUBLE PRECISION NOT NULL,
+  take_profit_2       DOUBLE PRECISION,
+  score               DOUBLE PRECISION NOT NULL DEFAULT 0,
+  validation          TEXT NOT NULL DEFAULT 'experimental',
+  plan_json           TEXT NOT NULL,
+  score_json          TEXT,
+  signal_id           TEXT REFERENCES trading_signals(id) ON DELETE SET NULL,
+  analysis_run_id     TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL,
+  last_scan_id        TEXT,
+  expires_at_ms       BIGINT NOT NULL,
+  created_at_ms       BIGINT NOT NULL,
+  updated_at_ms       BIGINT NOT NULL,
+  state_changed_at_ms BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_setups_state ON trade_setups (state, updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_setups_asset ON trade_setups (asset_id, timeframe);
+
+-- ---------------------------------------------------------------------------
+-- Paper trading (simulation)
+--
+-- Kept apart from `positions` (real holdings) on purpose: simulated results
+-- must never mix with what was actually bought. `plan_json` freezes the plan
+-- as it was when the simulation started, so the journal can compare plan with
+-- outcome; `fills_json` records every fill with its price source (live ticker
+-- or a candle replayed after the monitor was offline) and assumptions.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS sim_trades (
+  id                TEXT PRIMARY KEY,
+  mode              TEXT NOT NULL,               -- auto | manual
+  setup_id          TEXT REFERENCES trade_setups(id) ON DELETE SET NULL,
+  asset_id          TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  symbol            TEXT NOT NULL,
+  strategy_id       TEXT NOT NULL,
+  strategy_version  TEXT NOT NULL,
+  timeframe         TEXT NOT NULL,
+  entry_kind        TEXT NOT NULL,               -- market | limit | trigger
+  status            TEXT NOT NULL,               -- pending_entry | open | closed | cancelled
+  trigger_price     DOUBLE PRECISION,
+  entry_max         DOUBLE PRECISION NOT NULL,
+  stop_loss         DOUBLE PRECISION NOT NULL,
+  take_profit_1     DOUBLE PRECISION NOT NULL,
+  take_profit_2     DOUBLE PRECISION,
+  horizon_ms        BIGINT NOT NULL,
+  expires_at_ms     BIGINT NOT NULL,             -- a pending entry must fill before this
+  initial_quantity  DOUBLE PRECISION,
+  quantity          DOUBLE PRECISION,            -- still open
+  entry_price       DOUBLE PRECISION,
+  entry_at_ms       BIGINT,
+  sell_by_ms        BIGINT,
+  realized_pnl_idr  DOUBLE PRECISION NOT NULL DEFAULT 0,
+  exit_price        DOUBLE PRECISION,            -- final (or average) exit price
+  exit_at_ms        BIGINT,
+  exit_reason       TEXT,                        -- stop | tp1 | time | manual | expired | cancelled
+  mark_price        DOUBLE PRECISION,            -- last bid seen by the monitor
+  mark_at_ms        BIGINT,
+  last_checked_ms   BIGINT,
+  plan_json         TEXT NOT NULL,
+  costs_json        TEXT NOT NULL,
+  fills_json        TEXT NOT NULL,
+  created_at_ms     BIGINT NOT NULL,
+  updated_at_ms     BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sim_status ON sim_trades (status, updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_sim_setup ON sim_trades (setup_id);
+
+-- ---------------------------------------------------------------------------
+-- Strategy validation
+--
+-- One row per validation run per strategy x entry timeframe: the plan-level
+-- backtest on Indodax history, split chronologically into in-sample and
+-- out-of-sample periods, compared with random entries and buy-and-hold. The
+-- newest row's `label` decides whether setups are shown as validated or as
+-- experimental.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS strategy_validations (
+  id                        TEXT PRIMARY KEY,
+  strategy_id               TEXT NOT NULL,
+  strategy_version          TEXT NOT NULL,
+  engine_version            TEXT NOT NULL,
+  timeframe                 TEXT NOT NULL,
+  computed_at_ms            BIGINT NOT NULL,
+  period_from_ms            BIGINT,
+  split_at_ms               BIGINT,
+  period_to_ms              BIGINT,
+  pairs                     INTEGER NOT NULL,
+  signals                   INTEGER NOT NULL,
+  rejected_json             TEXT NOT NULL,
+  in_sample_json            TEXT NOT NULL,
+  out_of_sample_json        TEXT NOT NULL,
+  random_expectancy_pct     DOUBLE PRECISION,
+  random_trades             INTEGER NOT NULL DEFAULT 0,
+  buy_hold_pct              DOUBLE PRECISION,
+  label                     TEXT NOT NULL,
+  unmet_json                TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_validations_latest ON strategy_validations (strategy_id, timeframe, computed_at_ms);

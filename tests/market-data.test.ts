@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeCandles, markPartial, closedOnly } from '@/lib/market/normalize';
 import { assessFreshness, canGenerateSignals } from '@/lib/market/freshness';
-import { sessionState, localParts, isRegularUsSession } from '@/lib/market/sessions';
+import { sessionState } from '@/lib/market/sessions';
 import type { Candle } from '@/lib/market/types';
 import { TIMEFRAME_MS } from '@/lib/market/types';
 
@@ -134,54 +134,13 @@ describe('assessFreshness', () => {
 });
 
 describe('exchange sessions', () => {
-  it('treats crypto exchanges as always open', () => {
-    const s = sessionState('BINANCE', Date.UTC(2026, 0, 4, 3, 0)); // a Sunday
-    expect(s.open).toBe(true);
+  it('treats Indodax as always open, weekends included', () => {
+    expect(sessionState('INDODAX')).toEqual({ open: true, phase: 'regular', window: '24/7' });
   });
 
-  it('applies US daylight saving correctly', () => {
-    // 2026-07-01 13:30 UTC = 09:30 EDT (summer, UTC-4) -> open.
-    expect(isRegularUsSession(Date.UTC(2026, 6, 1, 13, 30))).toBe(true);
-    // 2026-07-01 13:00 UTC = 09:00 EDT -> before the open.
-    expect(isRegularUsSession(Date.UTC(2026, 6, 1, 13, 0))).toBe(false);
-    // 2026-01-05 14:30 UTC = 09:30 EST (winter, UTC-5) -> open.
-    expect(isRegularUsSession(Date.UTC(2026, 0, 5, 14, 30))).toBe(true);
-    // 2026-01-05 14:00 UTC = 09:00 EST -> before the open.
-    expect(isRegularUsSession(Date.UTC(2026, 0, 5, 14, 0))).toBe(false);
-  });
-
-  it('reports the US weekend as closed', () => {
-    const s = sessionState('US', Date.UTC(2026, 0, 3, 15, 0)); // Saturday
+  it('reports any other exchange as unsupported rather than guessing its hours', () => {
+    const s = sessionState('US');
     expect(s.open).toBe(false);
-    expect(s.open === false && s.phase).toBe('weekend');
-  });
-
-  it('identifies the US pre-market as extended hours, not regular', () => {
-    const s = sessionState('US', Date.UTC(2026, 0, 5, 13, 0)); // 08:00 EST
-    expect(s.open).toBe(true);
-    expect(s.open && s.phase).toBe('extended');
-  });
-
-  it('handles the IDX midday break in Asia/Jakarta', () => {
-    // 2026-01-05 05:00 UTC = 12:00 WIB -> between sessions.
-    const between = sessionState('IDX', Date.UTC(2026, 0, 5, 5, 30));
-    expect(between.open).toBe(false);
-    // 2026-01-05 03:00 UTC = 10:00 WIB -> session I.
-    expect(sessionState('IDX', Date.UTC(2026, 0, 5, 3, 0)).open).toBe(true);
-  });
-
-  it('honours a configured holiday', () => {
-    const newYear = Date.UTC(2026, 0, 1, 15, 0); // Thursday
-    expect(sessionState('US', newYear).open).toBe(true);
-    const s = sessionState('US', newYear, ['2026-01-01']);
-    expect(s.open).toBe(false);
-    expect(s.open === false && s.phase).toBe('holiday');
-  });
-
-  it('converts instants into the correct local wall clock', () => {
-    const p = localParts(Date.UTC(2026, 0, 5, 14, 30), 'America/New_York');
-    expect(p.isoDate).toBe('2026-01-05');
-    expect(p.minutes).toBe(9 * 60 + 30);
-    expect(p.weekday).toBe(1); // Monday
+    expect(s.open === false && s.reason).toMatch(/only Indodax/);
   });
 });

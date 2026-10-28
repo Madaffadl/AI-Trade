@@ -6,9 +6,9 @@ import { RssNewsProvider } from './rss';
 /**
  * Built-in news feeds.
  *
- * All three were verified reachable on 2026-10-22. They are official or
- * reputable sources published as RSS/Atom, which keeps news ingestion free and
- * key-less. Additional feeds can be added through NEWS_EXTRA_FEEDS without code
+ * Crypto news and the central-bank decisions that move it, both verified
+ * reachable on 2026-10-22, published as RSS/Atom - free and key-less. (The US
+ * SEC filings feed was removed with the stock markets on 2026-10-29.) Additional feeds can be added through NEWS_EXTRA_FEEDS without code
  * changes.
  */
 export const BUILTIN_FEEDS: FeedDefinition[] = [
@@ -19,16 +19,6 @@ export const BUILTIN_FEEDS: FeedDefinition[] = [
     url: 'https://www.federalreserve.gov/feeds/press_monetary.xml',
     category: 'monetary_policy',
     notes: 'Primary source for FOMC statements and rate decisions. Verified reachable 2026-10-22.',
-  },
-  {
-    id: 'sec_8k',
-    name: 'SEC EDGAR - recent 8-K filings',
-    publisher: 'U.S. Securities and Exchange Commission',
-    // Company-agnostic feed of recent 8-K current reports.
-    url: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=8-K&dateb=&owner=include&count=40&output=atom',
-    category: 'corporate_action',
-    notes:
-      'SEC requires a declaring User-Agent with contact details. Without SEC_USER_AGENT this feed is skipped rather than requested anonymously (which returns HTTP 403).',
   },
   {
     id: 'coindesk',
@@ -72,27 +62,11 @@ export function resolveFeeds(): FeedAvailability[] {
     ? [...BUILTIN_FEEDS, ...extraFeeds()]
     : [...BUILTIN_FEEDS, ...extraFeeds()].filter((f) => e.NEWS_FEEDS.includes(f.id));
 
-  return selected.map((feed) => {
-    if (feed.id === 'sec_8k' && !e.SEC_USER_AGENT) {
-      return {
-        feed,
-        available: false,
-        reason:
-          'SEC_USER_AGENT is not set. The SEC requires a User-Agent with contact details and returns HTTP 403 without one.',
-      };
-    }
-    return { feed, available: true, reason: null };
-  });
+  return selected.map((feed) => ({ feed, available: true, reason: null }));
 }
 
 export function newsProviders(): RssNewsProvider[] {
   return resolveFeeds()
     .filter((f) => f.available)
-    .map((f) => {
-      const feed = { ...f.feed };
-      if (feed.id === 'sec_8k') {
-        feed.headers = { 'User-Agent': env().SEC_USER_AGENT };
-      }
-      return new RssNewsProvider(feed);
-    });
+    .map((f) => new RssNewsProvider(f.feed));
 }

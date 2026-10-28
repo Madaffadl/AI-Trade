@@ -1,9 +1,11 @@
+import Link from 'next/link';
 import { features } from '@/lib/config/env';
 import { formatAge, formatUtc } from '@/lib/format';
 import { listAlerts, listDeliveries } from '@/lib/notifications/repo';
 import { Card, EmptyState, InfoNote, Stat } from '@/components/ui';
 import { MarkReadButtons } from './mark-read';
-import { getMessages } from '@/lib/i18n';
+import { getMessages, type Messages } from '@/lib/i18n';
+import type { AlertRow } from '@/lib/notifications/repo';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +14,26 @@ const SEVERITY_TONE: Record<string, string> = {
   warning: 'border-warn/30 bg-warn-dim text-warn',
   critical: 'border-down/30 bg-down-dim text-down',
 };
+
+function kindLabel(t: Messages, kind: string): string {
+  if (kind === 'setup') return t.notify.kindSetup;
+  if (kind === 'simulation') return t.notify.kindSimulation;
+  if (kind === 'position') return t.notify.kindPosition;
+  return t.notify.kindOther;
+}
+
+/** Where an alert's subject lives in the app. */
+function alertHref(a: AlertRow): string | null {
+  try {
+    const p = a.payload_json ? (JSON.parse(a.payload_json) as Record<string, unknown>) : {};
+    if (typeof p.setupId === 'string') return `/opportunities/${p.setupId}`;
+    if (typeof p.simId === 'string') return '/simulations';
+    if (typeof p.positionId === 'string') return '/portfolio';
+  } catch {
+    // An unreadable payload just means no link.
+  }
+  return null;
+}
 
 export default async function AlertsPage() {
   const t = await getMessages();
@@ -54,15 +76,20 @@ export default async function AlertsPage() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`rounded border px-1.5 py-px text-2xs font-medium ${SEVERITY_TONE[a.severity]}`}>
-                    {a.severity}
+                    {a.severity === 'critical' ? t.notify.severityCritical : a.severity === 'warning' ? t.notify.severityWarning : t.notify.severityInfo}
                   </span>
                   <span className="text-xs font-medium text-ink">{a.title}</span>
-                  <span className="text-2xs text-ink-faint">{a.kind}</span>
+                  <span className="text-2xs text-ink-faint">{kindLabel(t, a.kind)}</span>
                   <span className="ml-auto text-2xs text-ink-faint" title={formatUtc(a.created_at_ms)}>
                     {formatAge(a.created_at_ms)}
                   </span>
                 </div>
                 <p className="mt-1 whitespace-pre-wrap text-2xs text-ink-muted">{a.body}</p>
+                {alertHref(a) && (
+                  <Link href={alertHref(a)!} className="mt-1 inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
+                    {t.alerts.open} →
+                  </Link>
+                )}
               </li>
             ))}
           </ul>

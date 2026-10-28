@@ -1,216 +1,332 @@
 import Link from 'next/link';
-import { features } from '@/lib/config/env';
-import { listRecentJobs, listProviderStatus } from '@/lib/db/repo';
-import { scanWatchlist } from '@/lib/market/scanner';
-import { countArticles, listArticles } from '@/lib/news/repo';
-import { listAlerts } from '@/lib/notifications/repo';
-import { listSignals } from '@/lib/signals/repo';
-import { ScanTable } from '@/components/scan-table';
-import { BeginnerGuide } from '@/components/beginner-guide';
-import { FxDisclosure } from '@/components/money';
-import { fxContext, getDisplayCurrencySetting } from '@/lib/fx/service';
-import { getMessages } from '@/lib/i18n';
-import { ActionBadge, Card, DataQualityBadge, EmptyState, InfoNote, Stat, StrengthBadge, WarningNote } from '@/components/ui';
-import { formatAge, formatUtc } from '@/lib/format';
+import { Card, WarningNote } from '@/components/ui';
+import {
+  actionLine,
+  failureText,
+  pairLabel,
+  PlanFacts,
+  StateBadge,
+  strategyLabel,
+  timeframeLabel,
+  ValidationNote,
+  WhySection,
+} from '@/components/plan/plan-view';
+import { RefreshScanButton } from '@/components/plan/refresh-button';
+import { SimulateButton } from '@/components/plan/simulate-button';
+import { simulateLabels } from '@/lib/i18n/client-labels';
+import { analysisForSetup } from '@/lib/analysis/service';
+import { monitorHeartbeat } from '@/lib/jobs/monitor';
+import { nowMs } from '@/lib/db/repo';
+import { formatIdr, formatWib } from '@/lib/format';
+import { getMessages, type Messages } from '@/lib/i18n';
+import { rankSetups } from '@/lib/plan/ranking';
+import { latestScanRun, listSetupsForScan, type ScanSummary, type StoredSetup } from '@/lib/plan/repo';
+import { scanFreshness } from '@/lib/plan/states';
+import { listPositions } from '@/lib/positions/repo';
+import { latestValidations } from '@/lib/evaluation/validate';
+import { getTradingSettings, usableCapital } from '@/lib/settings/trading';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Overview dashboard.
+ * Home: the decision screen.
  *
- * Reads only from the database and the market service cache; it does not force
- * provider refreshes on render, so navigating around the app costs no API quota.
+ * Answers, in this order: what to do now, which pair, at what price, where to
+ * exit, how much, and how long to hold - or says plainly that there is no
+ * trade. Everything shown comes from the latest stored scan, re-checked every
+ * minute against live prices by the worker's monitor; rendering this page
+ * never calls the exchange. Prices checked more than 10 minutes ago, or
+ * candles from a scan more than 75 minutes old, show no action at all: a
+ * stale BUY is worse than no BUY.
  */
-export default async function OverviewPage() {
-  const flags = features();
+export default async function HomePage() {
   const t = await getMessages();
-  const display = await getDisplayCurrencySetting();
-  const fx = await fxContext(display);
-  const [rows, signals, alerts, articles, jobs, providers, articleCount] = await Promise.all([
-    scanWatchlist(),
-    listSignals({ limit: 8 }),
-    listAlerts(6),
-    listArticles(5),
-    listRecentJobs(1),
-    listProviderStatus(),
-    countArticles(),
+  // Request time: this page is dynamic and renders once per request.
+  const now = nowMs();
+  const [scan, settings, positions, validations, heartbeat] = await Promise.all([
+    latestScanRun(),
+    getTradingSettings(),
+    listPositions('open'),
+    latestValidations(),
+    monitorHeartbeat(),
   ]);
-
-  const lastJob = jobs[0];
-  const degraded = rows.filter((r) => r.quality !== 'ok');
-  const failingProviders = providers.filter((p) => p.consecutive_failures > 0);
-  const actionable = signals.filter((s) => s.action === 'BUY' || s.action === 'SELL');
+  const validatedCount = [...validations.values()].filter((v) => v.label === 'validated').length;
+  const setups = scan ? await listSetupsForScan(scan.id) : [];
+  const ranked = rankSetups(setups);
+  const rejected = setups.filter((s) => s.state === 'NOT_ELIGIBLE');
+  const freshness = scan ? scanFreshness({ id: scan.id, finishedAtMs: scan.finished_at_ms ?? scan.started_at_ms }, heartbeat, now) : null;
+  const fresh = freshness?.fresh ?? false;
+  // A scan skips that minute's live check, so allow a few minutes before calling the worker stopped.
+  const monitorRunning = heartbeat?.monitorAtMs != null && now - heartbeat.monitorAtMs <= 5 * 60_000;
+  const top = ranked[0] ?? null;
+  const topAi = fresh && top?.analysis_run_id ? await analysisForSetup(top) : null;
+  const indodaxPositions = positions.filter((p) => p.exchange_id === 'INDODAX');
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-ink">{t.overview.title}</h1>
-          <p className="text-2xs text-ink-muted">
-            {t.overview.subtitle(
-              rows.length,
-              flags.dataMode,
-              flags.aiEnabled ? t.overview.aiVia(flags.aiProvider) : t.overview.aiDisabled,
-            )}
+          <p className="text-2xs uppercase tracking-wide text-ink-faint">{t.plan.title}</p>
+          <p className="mt-0.5 text-2xs text-ink-muted">{t.plan.subtitle}</p>
+          {scan && (
+            <p className="mt-0.5 text-2xs text-ink-faint">
+              {t.plan.dataStatus(formatWib(scan.finished_at_ms ?? scan.started_at_ms), scan.universe_size)}
+            </p>
+          )}
+          <p className={`mt-0.5 text-2xs ${monitorRunning ? 'text-ink-faint' : 'text-warn'}`}>
+            {monitorRunning ? t.plan.monitorOn(formatWib(heartbeat!.monitorAtMs)) : t.plan.monitorOff}
           </p>
         </div>
-        <p className="text-2xs text-ink-faint">
-          {t.overview.lastJob(lastJob ? `${formatUtc(lastJob.started_at_ms)} (${lastJob.status})` : t.overview.neverRun)}
-        </p>
+        <RefreshScanButton labels={{ refresh: t.plan.refresh, refreshing: t.plan.refreshing, failed: t.plan.refreshFailed }} />
       </div>
 
-      <BeginnerGuide labels={t.guide} />
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <Stat label={t.overview.statWatchlist} value={rows.length} sub={t.overview.statWatchlistSub} />
-        <Stat
-          label={t.overview.statUsable}
-          value={`${rows.length - degraded.length}/${rows.length}`}
-          sub={t.overview.statUsableSub}
-          tone={degraded.length > 0 ? 'text-warn' : 'text-up'}
+      {!scan ? (
+        <Hero tone="neutral" title={t.plan.neverScanned} body={t.plan.neverScannedBody} />
+      ) : !fresh ? (
+        <Hero
+          tone="warn"
+          title={t.plan.staleTitle}
+          body={t.plan.staleBody(freshness?.staleMinutes ?? 0)}
         />
-        <Stat label={t.overview.statSignals} value={actionable.length} sub={t.overview.statSignalsSub} />
-        <Stat label={t.overview.statAlerts} value={alerts.filter((a) => a.read_at_ms === null).length} sub={t.overview.statAlertsSub} />
-        <Stat
-          label={t.overview.statNews}
-          value={articleCount}
-          sub={flags.newsEnabled ? t.overview.statNewsFeeds(flags.newsFeeds.length) : t.overview.statNewsNoFeeds}
-        />
-      </div>
-
-      {failingProviders.length > 0 && (
-        <WarningNote>
-          {t.overview.providerIssues}{' '}
-          {failingProviders
-            .map((p) => `${p.provider}/${p.operation} — ${p.consecutive_failures} consecutive failure(s): ${p.last_error ?? 'unknown'}`)
-            .join(' · ')}
-        </WarningNote>
+      ) : (
+        <Decision t={t} decision={scan.decision} top={top} topAi={topAi} summary={scan.summary} rejected={rejected} now={now} />
       )}
 
-      <Card
-        title={t.overview.scanTitle}
-        subtitle={t.overview.scanSubtitle}
-        actions={
-          <Link href="/scanner" className="inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
-            {t.overview.openScanner}
-          </Link>
-        }
-      >
-        {rows.length === 0 ? (
-          <EmptyState
-            title={t.overview.noAssets}
-            body={t.overview.noAssetsBody}
-          />
-        ) : (
-          <ScanTable rows={rows} fx={fx} t={t} />
-        )}
-      </Card>
+      <p className="text-2xs text-ink-muted">
+        {t.plan.capitalLine(formatIdr(usableCapital(settings)), formatIdr(scan?.summary?.cashAvailableIdr ?? usableCapital(settings)), settings.riskPercent)}{' '}
+        ·{' '}
+        <Link href="/settings#trading" className="text-accent hover:underline">
+          {t.plan.settingsLink}
+        </Link>
+      </p>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card
-          title={t.overview.recentSignals}
-          subtitle={t.overview.recentSignalsSub}
-          actions={
-            <Link href="/signals" className="inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
-              {t.overview.allSignals}
-            </Link>
-          }
-        >
-          {signals.length === 0 ? (
-            <EmptyState
-              title={t.overview.noSignals}
-              body={t.overview.noSignalsBody}
-            />
-          ) : (
-            <ul className="space-y-2">
-              {signals.map((s) => (
-                <li key={s.id} className="rounded border border-line bg-bg-inset px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <ActionBadge action={s.action} />
-                    <Link href={`/signals/${s.id}`} className="text-xs font-medium text-ink hover:text-accent">
-                      {s.symbol}
-                    </Link>
-                    <span className="text-2xs text-ink-faint">{s.timeframe} · {s.strategy_id}</span>
-                    <StrengthBadge strength={s.strength} labels={t.strength} />
-                    <span className="ml-auto text-2xs text-ink-faint">{formatAge(s.generated_at_ms)}</span>
-                  </div>
-                  <p className="mt-1 text-2xs text-ink-muted">
-                    R:R {s.risk_reward === null ? '—' : s.risk_reward.toFixed(2)} · regime {s.regime} · data{' '}
-                    {s.data_quality}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
-        <Card
-          title={t.overview.latestNews}
-          subtitle={t.overview.latestNewsSub}
-          actions={
-            <Link href="/news" className="inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
-              {t.overview.newsLink}
-            </Link>
-          }
-        >
-          {articles.length === 0 ? (
-            <EmptyState
-              title={t.overview.noNews}
-              body={t.overview.noNewsBody}
-            />
-          ) : (
-            <ul className="space-y-2">
-              {articles.map((a) => (
-                <li key={a.id} className="rounded border border-line bg-bg-inset px-3 py-2">
-                  <a
-                    href={a.url}
-                    target="_blank"
-                    rel="noopener noreferrer nofollow"
-                    className="inline-flex min-h-[24px] items-center text-xs text-ink transition-colors hover:text-accent"
-                  >
-                    {a.headline}
-                  </a>
-                  <p className="mt-1 text-2xs text-ink-faint">
-                    {a.publisher} · {t.overview.published} {formatUtc(a.published_at_ms)} · {t.ui.retrieved}{' '}
-                    {formatAge(a.fetched_at_ms)} · {a.category}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </div>
-
-      {degraded.length > 0 && (
-        <Card title={t.overview.degradedTitle} subtitle={t.overview.degradedSub}>
-          <ul className="space-y-2.5">
-            {degraded.map((r) => (
-              <li key={r.assetId}>
-                <div className="flex flex-wrap items-center gap-2 text-2xs">
-                  <DataQualityBadge quality={r.quality} labels={t.quality} />
-                  <span className="font-medium text-ink">{r.symbol}</span>
-                  <span className="text-ink-muted">{r.error ?? r.reasons[0] ?? t.overview.noDetail}</span>
-                </div>
-                {r.remedy && (
-                  <p className="ml-1 mt-1 border-l border-line-strong pl-2 text-2xs text-accent">
-                    {t.overview.howToFix} {r.remedy}
-                  </p>
-                )}
-              </li>
+      {fresh && ranked.length > 1 && (
+        <Card title={t.plan.othersTitle}>
+          <ul className="space-y-2">
+            {ranked.slice(1, 4).map((s) => (
+              <SetupRow key={s.id} s={s} t={t} />
             ))}
           </ul>
         </Card>
       )}
 
-      <FxDisclosure target={display} providerUpdatedAtMs={fx.rates?.providerUpdatedAtMs ?? null} />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Card
+          title={t.plan.positionsTitle}
+          actions={
+            <Link href="/portfolio" className="inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
+              {t.plan.managePositions}
+            </Link>
+          }
+        >
+          <p className="text-xs text-ink-muted">
+            {indodaxPositions.length > 0 ? t.plan.positionsBody(indodaxPositions.length) : t.plan.positionsEmpty}
+          </p>
+        </Card>
+        <Card
+          title={t.plan.performanceTitle}
+          actions={
+            <Link href="/performance" className="inline-flex min-h-[24px] items-center text-2xs text-accent hover:underline">
+              {t.nav.performance}
+            </Link>
+          }
+        >
+          <p className="text-xs text-ink-muted">
+            {validations.size === 0
+              ? t.plan.performanceBody
+              : validatedCount === 0
+                ? t.perf.noneValidated
+                : t.perf.validatedCount(validatedCount, validations.size)}
+          </p>
+        </Card>
+      </div>
 
-      <InfoNote>
-        {t.overview.footer}{' '}
-        <Link href="/evaluation" className="text-accent hover:underline">
-          {t.overview.footerLink}
-        </Link>
-        {t.overview.footerTail}
-      </InfoNote>
+      <WarningNote>{t.plan.riskWarning}</WarningNote>
     </div>
+  );
+}
+
+const HERO_TONE = {
+  buy: 'border-up/50',
+  wait: 'border-accent/50',
+  neutral: 'border-line-strong',
+  warn: 'border-warn/50',
+} as const;
+
+const HEADLINE_TONE = { buy: 'text-up', wait: 'text-accent', neutral: 'text-ink', warn: 'text-warn' } as const;
+
+function Hero({
+  tone,
+  title,
+  body,
+  children,
+}: {
+  tone: keyof typeof HERO_TONE;
+  title: string;
+  body?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className={`rounded-lg border-2 bg-bg-raised p-5 ${HERO_TONE[tone]}`}>
+      <h1 className={`text-xl font-semibold leading-snug ${HEADLINE_TONE[tone]}`}>{title}</h1>
+      {body && <p className="mt-2 max-w-3xl text-sm text-ink-muted">{body}</p>}
+      {children && <div className="mt-4 space-y-4">{children}</div>}
+    </section>
+  );
+}
+
+function Decision({
+  t,
+  decision,
+  top,
+  topAi,
+  summary,
+  rejected,
+  now,
+}: {
+  t: Messages;
+  decision: string;
+  top: StoredSetup | null;
+  topAi: Awaited<ReturnType<typeof analysisForSetup>> | null;
+  summary: ScanSummary | null;
+  rejected: StoredSetup[];
+  now: number;
+}) {
+  if (decision === 'DATA_UNAVAILABLE') {
+    return <Hero tone="warn" title={t.plan.decisionDataUnavailable} body={t.plan.decisionDataUnavailableBody} />;
+  }
+  if (decision === 'DAILY_STOP') {
+    return (
+      <Hero
+        tone="warn"
+        title={t.plan.decisionDailyStop}
+        body={t.plan.decisionDailyStopBody((summary?.dailyLossPercent ?? 0).toFixed(2), summary?.maxDailyLossPercent ?? 0)}
+      />
+    );
+  }
+  if (decision === 'POSITIONS_FULL') {
+    return (
+      <Hero
+        tone="warn"
+        title={t.plan.decisionPositionsFull}
+        body={t.plan.decisionPositionsFullBody(summary?.openPositions ?? 0, summary?.maxOpenPositions ?? 0)}
+      />
+    );
+  }
+
+  if (top && (top.state === 'BUY_NOW' || top.state === 'WAIT_FOR_ENTRY')) {
+    const p = top.plan;
+    const headline = `${pairLabel(p)} · ${timeframeLabel(t, p.timeframe)} · ${strategyLabel(t, p.strategyId)}`;
+    const line = actionLine(t, p, top.state, top.state_reason);
+    return (
+      <Hero
+        tone={top.state === 'BUY_NOW' ? 'buy' : 'wait'}
+        title={top.state === 'BUY_NOW' ? t.plan.decisionBuyNow(headline) : t.plan.decisionWait(headline)}
+        body={line ?? undefined}
+      >
+        <ValidationNote validation={top.validation} t={t} />
+        <PlanFacts plan={p} t={t} now={now} />
+        <div className="flex flex-wrap items-start gap-2">
+          <SimulateButton setupId={top.id} labels={simulateLabels(t)} />
+          <Link
+            href={`/opportunities/${top.id}`}
+            className="inline-flex min-h-[44px] items-center rounded border border-accent/40 bg-accent-dim px-3 text-xs font-semibold text-accent hover:bg-accent/20"
+          >
+            {t.plan.openPlan}
+          </Link>
+          <Link
+            href={`/opportunities/${top.id}#record`}
+            className="inline-flex min-h-[44px] items-center rounded border border-line-strong px-3 text-xs text-ink-muted hover:text-ink"
+          >
+            {t.plan.alreadyBought}
+          </Link>
+        </div>
+        {topAi?.ai && (
+          <div className="rounded border border-line bg-bg-inset px-3 py-2">
+            <h2 className="text-xs font-semibold text-ink">{t.plan.aiNoteTitle}</h2>
+            <p className="mt-1 text-xs text-ink-muted">{topAi.ai.finalAssessment}</p>
+            <p className="mt-1 text-2xs text-ink-faint">
+              {t.plan.aiNoteSource(topAi.aiModel ?? topAi.aiProvider, formatWib(topAi.generatedAtMs))}
+            </p>
+          </div>
+        )}
+        <WhySection plan={p} t={t} />
+      </Hero>
+    );
+  }
+
+  return (
+    <Hero tone="neutral" title={t.plan.decisionNoTrade} body={t.plan.decisionNoTradeBody}>
+      {summary && summary.pairs.length > 0 && <MarketConditions t={t} summary={summary} />}
+      {rejected.length > 0 && (
+        <div>
+          <h2 className="text-xs font-semibold text-ink">{t.plan.rejectedTitle(rejected.length)}</h2>
+          <ul className="mt-2 space-y-1 text-2xs text-ink-muted">
+            {rejected.slice(0, 5).map((s) => (
+              <li key={s.id}>
+                <Link href={`/opportunities/${s.id}`} className="text-accent hover:underline">
+                  {pairLabel(s.plan)} · {timeframeLabel(t, s.plan.timeframe)}
+                </Link>{' '}
+                — {s.plan.eligibility.failures.map((f) => failureText(t, s.plan, f)).join('; ')}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Hero>
+  );
+}
+
+function MarketConditions({ t, summary }: { t: Messages; summary: ScanSummary }) {
+  const label: Record<string, string> = {
+    uptrend: t.plan.regimeUptrend,
+    downtrend: t.plan.regimeDowntrend,
+    sideways: t.plan.regimeSideways,
+    high_volatility: t.plan.regimeHighVol,
+    low_volatility: t.plan.regimeLowVol,
+    uncertain: t.plan.regimeUncertain,
+  };
+  const counts = new Map<string, number>();
+  for (const p of summary.pairs) {
+    const key = p.regime ? (label[p.regime] ?? p.regime) : t.plan.regimeNoData;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const contextUp = summary.pairs.filter((p) => p.contextUp === true).length;
+  return (
+    <div>
+      <h2 className="text-xs font-semibold text-ink">{t.plan.whyNoTradeTitle}</h2>
+      <p className="mt-1 text-2xs text-ink-muted">{t.plan.whyNoTradeBody(summary.pairs.length)}</p>
+      <ul className="mt-2 flex flex-wrap gap-2">
+        {[...counts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, n]) => (
+            <li key={name} className="rounded border border-line bg-bg-inset px-2 py-1 text-2xs text-ink-muted">
+              <span className="num font-semibold text-ink">{n}</span> × {name}
+            </li>
+          ))}
+        <li className="rounded border border-line bg-bg-inset px-2 py-1 text-2xs text-ink-muted">{t.plan.contextUpCount(contextUp)}</li>
+      </ul>
+    </div>
+  );
+}
+
+function SetupRow({ s, t }: { s: StoredSetup; t: Messages }) {
+  const line = actionLine(t, s.plan, s.state, s.state_reason);
+  return (
+    <li className="rounded border border-line bg-bg-inset px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <StateBadge state={s.state} t={t} />
+        <Link href={`/opportunities/${s.id}`} className="text-xs font-medium text-ink hover:text-accent">
+          {pairLabel(s.plan)}
+        </Link>
+        <span className="text-2xs text-ink-faint">
+          {timeframeLabel(t, s.plan.timeframe)} · {strategyLabel(t, s.plan.strategyId)}
+        </span>
+        <span className="ml-auto text-2xs text-ink-muted">
+          {t.plan.riskReward} 1 : {s.plan.outcome.netRiskReward.toFixed(2)}
+        </span>
+      </div>
+      {line && <p className="mt-1 text-2xs text-ink-muted">{line}</p>}
+    </li>
   );
 }

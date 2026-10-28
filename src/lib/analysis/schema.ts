@@ -35,13 +35,23 @@ export const AiAnalysisSchema = z.object({
 
 export type AiAnalysis = z.infer<typeof AiAnalysisSchema>;
 
-/** Phrases that must never appear in AI commentary for a trading tool. */
+/**
+ * Phrases that must never appear in AI commentary for a trading tool.
+ * Commentary follows the interface language, so every claim is covered in
+ * Indonesian too - an English-only list would wave "pasti untung" through.
+ */
 const FORBIDDEN = [
   /guaranteed?\s+(profit|return|win)/i,
   /\bcan'?t\s+lose\b/i,
   /\brisk[- ]free\b/i,
   /\b\d{2,3}\s*%\s*(chance|probability|certain)/i,
   /\bsure\s+thing\b/i,
+  /\b(pasti|dijamin|terjamin)\s+(untung|profit|cuan|naik|menang)/i,
+  /\b(keuntungan|profit|cuan)\s+(yang\s+)?(pasti|dijamin|terjamin)/i,
+  /\btanpa\s+risiko\b/i,
+  /\b(tidak|tak)\s+(mungkin|akan)\s+rugi\b/i,
+  /\b\d{2,3}\s*%\s*(peluang|kemungkinan|probabilitas|pasti)/i,
+  /\b(peluang|kemungkinan|probabilitas)\s+(sebesar\s+|hingga\s+)?\d{2,3}\s*%/i,
 ];
 
 export interface ValidationResult {
@@ -84,6 +94,37 @@ export function validateAiAnalysis(raw: unknown, allowedUrls: readonly string[])
   }
 
   return errors.length > 0 ? { ok: false, analysis: null, errors } : { ok: true, analysis: parsed.data, errors: [] };
+}
+
+/**
+ * Extract the JSON object from a model reply.
+ *
+ * Reasoning models served without a separate reasoning channel prepend
+ * `<think>...</think>`, and some wrap the answer in a markdown fence or a
+ * sentence of preamble. Those wrappers are stripped; the object itself is
+ * still parsed strictly and validated by `validateAiAnalysis` afterwards.
+ */
+export function parseModelJson(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  const cleaned = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/, '')
+    .trim();
+  try {
+    return { ok: true, value: JSON.parse(cleaned) };
+  } catch (err) {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      try {
+        return { ok: true, value: JSON.parse(cleaned.slice(start, end + 1)) };
+      } catch {
+        // fall through to the original error, which describes the whole reply
+      }
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** JSON Schema handed to providers that support structured output. */

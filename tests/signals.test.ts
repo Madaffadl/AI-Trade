@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeRisk, defaultCostAssumptions, aggregateOpenRisk } from '@/lib/signals/risk';
+import { defaultCostAssumptions } from '@/lib/signals/risk';
 import { classifyRegime } from '@/lib/signals/regime';
 import { buildIndicators, STRATEGIES } from '@/lib/strategies';
 import { strengthFromRules } from '@/lib/strategies/types';
@@ -22,86 +22,7 @@ function series(prices: number[], opts: { volume?: number | null } = {}): Candle
   }));
 }
 
-const asset = { tickSize: null, lotSize: null, minNotional: null, currency: 'USD', assetClass: 'crypto' as const };
-
-describe('computeRisk', () => {
-  const base = {
-    entry: 100,
-    stop: 95,
-    targets: [110, 120],
-    accountEquity: 10_000,
-    riskPercentPerTrade: 1,
-    feeBps: 10,
-    slippageBps: 5,
-    asset,
-    direction: 'long' as const,
-  };
-
-  it('computes position size from the risk budget and stop distance', () => {
-    const r = computeRisk(base);
-    expect(r.ok).toBe(true);
-    expect(r.riskPerUnit).toBeCloseTo(5, 10);
-    // 1% of 10,000 = 100 risk budget; 100 / 5 = 20 units.
-    expect(r.positionSize).toBeCloseTo(20, 10);
-    expect(r.riskAmount).toBeCloseTo(100, 10);
-    expect(r.stopDistancePct).toBeCloseTo(5, 10);
-  });
-
-  it('computes gross and net risk/reward, with net strictly worse', () => {
-    const r = computeRisk(base);
-    expect(r.riskReward).toBeCloseTo(2, 10); // (110-100)/5
-    expect(r.riskRewardNet!).toBeLessThan(r.riskReward!);
-  });
-
-  it('refuses when the stop is not below the entry', () => {
-    const r = computeRisk({ ...base, stop: 105 });
-    expect(r.ok).toBe(false);
-    expect(r.positionSize).toBeNull();
-    expect(r.refusals.join(' ')).toMatch(/below the entry/i);
-  });
-
-  it('refuses when no target is above the entry', () => {
-    const r = computeRisk({ ...base, targets: [90] });
-    expect(r.ok).toBe(false);
-    expect(r.refusals.join(' ')).toMatch(/take-profit/i);
-  });
-
-  it('refuses on invalid numeric inputs rather than returning a number', () => {
-    expect(computeRisk({ ...base, entry: Number.NaN }).ok).toBe(false);
-    expect(computeRisk({ ...base, accountEquity: 0 }).ok).toBe(false);
-    expect(computeRisk({ ...base, riskPercentPerTrade: 0 }).ok).toBe(false);
-  });
-
-  it('discloses unknown lot and tick sizes instead of inventing them', () => {
-    const r = computeRisk(base);
-    expect(r.disclosures.join(' ')).toMatch(/lot\/step size for this asset is unknown/i);
-    expect(r.disclosures.join(' ')).toMatch(/tick size is unknown/i);
-  });
-
-  it('rounds the position size down to a known lot size', () => {
-    const r = computeRisk({ ...base, asset: { ...asset, lotSize: 3 } });
-    // 20 units rounded down to a multiple of 3 = 18.
-    expect(r.positionSize).toBeCloseTo(18, 10);
-    expect(r.disclosures.join(' ')).not.toMatch(/lot\/step size for this asset is unknown/i);
-  });
-
-  it('refuses when the position falls below a known exchange minimum notional', () => {
-    const r = computeRisk({ ...base, asset: { ...asset, minNotional: 100_000 } });
-    expect(r.ok).toBe(false);
-    expect(r.refusals.join(' ')).toMatch(/minimum/i);
-  });
-
-  it('charges costs against reward and adds them to potential loss', () => {
-    const r = computeRisk(base);
-    expect(r.potentialLoss!).toBeGreaterThan(r.riskAmount!);
-  });
-
-  it('aggregates open risk as a percentage of equity', () => {
-    const agg = aggregateOpenRisk([100, 150, 50], 10_000);
-    expect(agg.totalRisk).toBe(300);
-    expect(agg.percentOfEquity).toBeCloseTo(3, 10);
-  });
-
+describe('evaluation cost assumptions', () => {
   it('uses different default cost assumptions per asset class', () => {
     expect(defaultCostAssumptions('crypto').feeBps).toBeGreaterThan(defaultCostAssumptions('stock').feeBps);
   });

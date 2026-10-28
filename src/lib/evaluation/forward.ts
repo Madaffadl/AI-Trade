@@ -6,7 +6,7 @@ import { TIMEFRAME_MS, type Timeframe } from '@/lib/market/types';
 import { defaultCostAssumptions } from '@/lib/signals/risk';
 import { STRATEGIES } from '@/lib/strategies';
 import { evaluateSignal } from './outcomes';
-import { computeMetrics, type TradeRecord } from './metrics';
+import { computeMetrics, type PerformanceMetrics, type TradeRecord } from './metrics';
 
 /**
  * Forward evaluation of signals this app actually generated.
@@ -49,7 +49,7 @@ export async function evaluateStoredSignals(): Promise<ForwardEvaluationSummary>
     const stored = await loadCandles(s.asset_id, s.timeframe, 2000);
     const forwardBars = stored.candles.filter((c) => c.openTimeMs > s.candle_open_ms && !c.isPartial);
 
-    const costs = defaultCostAssumptions(asset.assetClass);
+    const costs = await signalCosts(s.id, asset.assetClass);
     const result = evaluateSignal({
       entry: s.price_at_signal,
       stopLoss: s.stop_loss,
@@ -182,4 +182,60 @@ export async function listEvaluations(limit = 100) {
      ORDER BY s.generated_at_ms DESC LIMIT ?`,
     [limit],
   );
+}
+
+/**
+ * Per-side costs for scoring a signal. An Indodax plan carries its own cost
+ * model (taker fee, sale tax, levies, measured spread); its round trip is
+ * split evenly over the two sides, which keeps the total exact. Signals
+ * without a plan fall back to the generic assumption.
+ */
+async function signalCosts(signalId: string, assetClass: 'crypto' | 'stock'): Promise<{ feeBps: number; slippageBps: number }> {
+  const d = await db();
+  const row = await d.get<{ plan_json: string }>(
+    'SELECT plan_json FROM trade_setups WHERE signal_id = ? ORDER BY created_at_ms DESC LIMIT 1',
+    [signalId],
+  );
+  if (row) {
+    try {
+      const plan = JSON.parse(row.plan_json) as { costs?: { roundTripPercent?: number } };
+      const roundTrip = plan.costs?.roundTripPercent;
+      if (typeof roundTrip === 'number' && Number.isFinite(roundTrip)) return { feeBps: (roundTrip * 100) / 2, slippageBps: 0 };
+    } catch {
+      // fall through to the generic assumption
+    }
+  }
+  return defaultCostAssumptions(assetClass);
+}
+
+/** Resolved live-signal outcomes per strategy x timeframe, keyed "strategyId|timeframe". */
+export async function forwardMetricsByStrategyTimeframe(): Promise<Map<string, PerformanceMetrics>> {
+  const d = await db();
+  const rows = await d.all<{
+    strategy_id: string;
+    timeframe: string;
+    return_pct_net: number;
+    r_multiple: number | null;
+    outcome: string;
+    generated_at_ms: number;
+    overlaps_prior: number;
+  }>(
+    `SELECT s.strategy_id, s.timeframe, e.return_pct_net, e.r_multiple, e.outcome, s.generated_at_ms, e.overlaps_prior
+       FROM signal_evaluations e JOIN trading_signals s ON s.id = e.signal_id
+      WHERE e.outcome NOT IN ('pending', 'unevaluable') AND e.return_pct_net IS NOT NULL`,
+  );
+  const groups = new Map<string, TradeRecord[]>();
+  for (const r of rows) {
+    const key = `${r.strategy_id}|${r.timeframe}`;
+    const list = groups.get(key) ?? [];
+    list.push({
+      returnPctNet: r.return_pct_net,
+      rMultiple: r.r_multiple,
+      outcome: r.outcome,
+      generatedAtMs: r.generated_at_ms,
+      overlapsPrior: r.overlaps_prior === 1,
+    });
+    groups.set(key, list);
+  }
+  return new Map([...groups].map(([k, v]) => [k, computeMetrics(v)]));
 }

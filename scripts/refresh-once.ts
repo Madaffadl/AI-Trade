@@ -1,27 +1,18 @@
 import './_bootstrap';
-import { db } from '../src/lib/db/driver';
+import { db, migrate } from '../src/lib/db/driver';
 import { runRefresh } from '../src/lib/jobs/refresh';
 
-/** Run one refresh cycle and print a human-readable report. */
+/** Run one refresh cycle (Indodax scan + live check + position review) and print a short report. */
 async function main() {
-  const force = process.argv.includes('--force');
-  console.log(`Running refresh (force=${force}) ...\n`);
-  const s = await runRefresh({ force });
-
-  console.log(`Assets processed : ${s.assetsProcessed}`);
-  console.log(`Signals created  : ${s.signalsCreated}`);
-  console.log(`Alerts created   : ${s.alertsCreated}`);
-  console.log(`Invalidations    : ${s.invalidations}`);
-  console.log(`Duration         : ${((s.finishedAtMs - s.startedAtMs) / 1000).toFixed(1)}s`);
-
-  if (s.skipped.length) {
-    console.log('\nSkipped (no signal generated):');
-    for (const k of s.skipped) console.log(`  - ${k.symbol} ${k.timeframe}: ${k.reason}`);
-  }
-  if (s.errors.length) {
-    console.log('\nErrors:');
-    for (const e of s.errors) console.log(`  - ${e.symbol} ${e.timeframe}: ${e.error}`);
-  }
+  await migrate();
+  console.log('Running refresh ...\n');
+  const s = await runRefresh({ waitMs: 30_000 });
+  console.log(`Decision        : ${s.decision ?? '—'}`);
+  console.log(`Setups          : ${s.setups}`);
+  console.log(`Alerts created  : ${s.alertsCreated}`);
+  console.log(`Signals expired : ${s.signalsExpired}`);
+  console.log(`Duration        : ${((s.finishedAtMs - s.startedAtMs) / 1000).toFixed(1)}s`);
+  if (s.error) console.log(`Error           : ${s.error}`);
   await (await db()).close();
 }
 

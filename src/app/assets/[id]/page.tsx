@@ -1,23 +1,19 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { analyzeAsset } from '@/lib/analysis/service';
-import { features, riskDefaults } from '@/lib/config/env';
+import { features } from '@/lib/config/env';
 import { getAssetById } from '@/lib/db/repo';
-import { formatAge, formatIndicator, formatNumber, formatPercent, formatPercentSigned, formatPrice, formatUtc } from '@/lib/format';
+import { formatAge, formatIdr, formatIndicator, formatNumber, formatPercentSigned, formatUtc } from '@/lib/format';
 import { closedOnly } from '@/lib/market/normalize';
 import { ema } from '@/lib/indicators';
 import { getSeries } from '@/lib/market/service';
-import { isTimeframe, STYLE_TIMEFRAMES, styleForTimeframe, type Timeframe } from '@/lib/market/types';
+import { isTimeframe, styleForTimeframe, type Timeframe } from '@/lib/market/types';
 import { listArticlesForAsset } from '@/lib/news/repo';
-import { ensureDefaultWatchlist, listWatchlist } from '@/lib/db/repo';
-import { AddToWatchlistButton } from '@/app/markets/catalog-actions';
-import { computeRisk, defaultCostAssumptions } from '@/lib/signals/risk';
 import { listSignals } from '@/lib/signals/repo';
 import { PriceChart } from '@/components/price-chart';
-import { ThresholdForm, type ThresholdRow } from './threshold-form';
-import { db } from '@/lib/db/driver';
 import {
   ActionBadge,
+  actionHint,
   AiBadge,
   Card,
   DataQualityBadge,
@@ -30,10 +26,11 @@ import {
 } from '@/components/ui';
 import { getMessages } from '@/lib/i18n';
 import { aiPanelLabels } from '@/lib/i18n/client-labels';
-import { actionHint } from '@/components/scan-table';
 import { AnalysisPanel } from './analysis-panel';
 
 export const dynamic = 'force-dynamic';
+
+const CHART_TIMEFRAMES: Timeframe[] = ['1h', '4h', '1d'];
 
 export default async function AssetPage({
   params,
@@ -49,11 +46,9 @@ export default async function AssetPage({
   const asset = await getAssetById(id);
   if (!asset) notFound();
 
-  const timeframe: Timeframe = isTimeframe(tf) ? tf : '1d';
+  // The Indodax plans trade 1h and 4h entries with a daily trend filter.
+  const timeframe: Timeframe = isTimeframe(tf) && CHART_TIMEFRAMES.includes(tf) ? tf : '1h';
   const style = styleForTimeframe(timeframe);
-
-  const watchlistId = await ensureDefaultWatchlist();
-  const tracked = (await listWatchlist(watchlistId)).some((w) => w.id === asset.id);
 
   const [result, analysis, signals, articles] = await Promise.all([
     getSeries(asset, timeframe, { limit: 320, minBars: 50 }),
@@ -65,14 +60,6 @@ export default async function AssetPage({
 
   const flags = features();
 
-  // Price thresholds for this asset. Plain numbers the user chose; they are
-  // deliberately NOT part of the strategy pipeline.
-  const thresholdRows = await (await db()).all<ThresholdRow>(
-    `SELECT id, direction, price, active, triggered_at_ms
-       FROM price_thresholds WHERE asset_id = ? ORDER BY created_at_ms DESC`,
-    [asset.id],
-  );
-  const risk = riskDefaults();
   const candles = result.series?.candles ?? [];
   const closed = closedOnly(candles);
   const latest = candles.at(-1) ?? null;
@@ -100,21 +87,6 @@ export default async function AssetPage({
         ]
       : undefined;
 
-  const costs = defaultCostAssumptions(asset.assetClass);
-  const sizing = levels
-    ? computeRisk({
-        entry: latest?.close ?? 0,
-        stop: levels.stopLoss,
-        targets: [levels.takeProfit1, ...(levels.takeProfit2 ? [levels.takeProfit2] : [])],
-        accountEquity: risk.accountEquity,
-        riskPercentPerTrade: risk.riskPercentPerTrade,
-        feeBps: costs.feeBps,
-        slippageBps: costs.slippageBps,
-        asset,
-        direction: 'long',
-      })
-    : null;
-
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -129,20 +101,9 @@ export default async function AssetPage({
           </p>
         </div>
         <div className="text-right">
-          <div className="mb-1 flex justify-end">
-            <AddToWatchlistButton
-              symbol={asset.symbol}
-              displayName={asset.displayName}
-              exchangeId={asset.exchangeId}
-              assetClass={asset.assetClass}
-              currency={asset.currency}
-              alreadyTracked={tracked}
-              labels={{ track: t.markets.track, tracked: t.markets.tracked }}
-            />
-          </div>
           {/* The one hero figure on this view: the price everything else is about. */}
           <p className="figure text-[2.75rem] font-semibold leading-none text-ink">
-            {formatPrice(latest?.close ?? null, asset.currency)}
+            {formatIdr(latest?.close ?? null)}
           </p>
           <p className={`figure mt-1 text-xs ${changePct && changePct >= 0 ? 'text-up' : 'text-down'}`}>
             {formatPercentSigned(changePct)} {t.asset.vsPrevClose}
@@ -152,21 +113,16 @@ export default async function AssetPage({
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-2xs uppercase tracking-wide text-ink-faint">{t.common.timeframe}</span>
-        {Object.entries(STYLE_TIMEFRAMES).map(([styleName, tfs]) => (
-          <span key={styleName} className="flex items-center gap-1">
-            <span className="text-2xs text-ink-faint">{styleName}:</span>
-            {tfs.map((t) => (
-              <Link
-                key={`${styleName}-${t}`}
-                href={`/assets/${asset.id}?tf=${t}`}
-                className={`rounded px-1.5 py-0.5 text-2xs ${
-                  t === timeframe ? 'bg-accent-dim text-accent' : 'text-ink-muted hover:bg-bg-inset hover:text-ink'
-                }`}
-              >
-                {t}
-              </Link>
-            ))}
-          </span>
+        {CHART_TIMEFRAMES.map((option) => (
+          <Link
+            key={option}
+            href={`/assets/${asset.id}?tf=${option}`}
+            className={`inline-flex min-h-[24px] items-center rounded px-2 py-0.5 text-2xs ${
+              option === timeframe ? 'bg-accent-dim text-accent' : 'text-ink-muted hover:bg-bg-inset hover:text-ink'
+            }`}
+          >
+            {option === '1h' ? t.plan.tf1h : option === '4h' ? t.plan.tf4h : t.plan.tf1d}
+          </Link>
         ))}
       </div>
 
@@ -176,11 +132,6 @@ export default async function AssetPage({
             title={t.asset.noData}
             detail={result.providerError ?? t.asset.noDataBody}
           />
-          {result.remedy && (
-            <WarningNote>
-              {t.overview.howToFix} {result.remedy}
-            </WarningNote>
-          )}
         </>
       ) : (
         <>
@@ -239,13 +190,13 @@ export default async function AssetPage({
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
             <Stat label="RSI 14" value={formatNumber(analysis.indicators.rsi14 as number | null, 1)} hint={t.glossary.rsi} />
-            <Stat label="EMA 20" value={formatPrice(analysis.indicators.ema20 as number | null)} hint={t.glossary.ema} />
-            <Stat label="EMA 50" value={formatPrice(analysis.indicators.ema50 as number | null)} hint={t.glossary.ema} />
-            <Stat label="EMA 200" value={formatPrice(analysis.indicators.ema200 as number | null)} hint={t.glossary.ema} />
+            <Stat label="EMA 20" value={formatIdr(analysis.indicators.ema20 as number | null)} hint={t.glossary.ema} />
+            <Stat label="EMA 50" value={formatIdr(analysis.indicators.ema50 as number | null)} hint={t.glossary.ema} />
+            <Stat label="EMA 200" value={formatIdr(analysis.indicators.ema200 as number | null)} hint={t.glossary.ema} />
             <Stat label="ATR 14" value={formatIndicator(analysis.indicators.atr14 as number | null)} hint={t.glossary.atr} />
             <Stat label="MACD hist" value={formatIndicator(analysis.indicators.macdHistogram as number | null)} hint={t.glossary.macdHistogram} />
             <Stat
-              label={t.scanner.relVol}
+              label={t.asset.relVol}
               value={
                 analysis.indicators.volumeAvailable
                   ? formatNumber(analysis.indicators.relativeVolume as number | null, 2)
@@ -299,34 +250,6 @@ export default async function AssetPage({
             </div>
           </Card>
 
-          {sizing && (
-            <Card
-              title={t.asset.riskTitle}
-              subtitle={t.asset.riskSub(formatNumber(risk.accountEquity, 0), risk.riskPercentPerTrade)}
-            >
-              {!sizing.ok ? (
-                <ErrorState title={t.asset.sizeNotCalculated} detail={sizing.refusals.join('\n')} />
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                    <Stat label={t.asset.riskPerUnit} value={formatIndicator(sizing.riskPerUnit)} hint={t.glossary.stopLoss} />
-                    <Stat label={t.asset.stopDistance} value={formatPercent(sizing.stopDistancePct)} hint={t.glossary.stopLoss} />
-                    <Stat label={t.asset.positionSize} value={formatNumber(sizing.positionSize, 6)} sub={t.signals.units} hint={t.glossary.positionSize} />
-                    <Stat label={t.asset.notional} value={formatNumber(sizing.positionNotional, 2)} sub={asset.currency} />
-                    <Stat label={t.asset.riskAmount} value={formatNumber(sizing.riskAmount, 2)} sub={asset.currency} hint={t.glossary.riskPerTrade} />
-                    <Stat label={t.asset.rrNet} value={formatNumber(sizing.riskRewardNet, 2)} sub={t.asset.rrGross(formatNumber(sizing.riskReward, 2))} hint={t.glossary.riskReward} />
-                  </div>
-                  <p className="mt-3 text-2xs text-ink-faint">{sizing.costAssumptionNote}</p>
-                  {sizing.disclosures.map((d, i) => (
-                    <p key={i} className="mt-1 text-2xs text-warn">
-                      · {d}
-                    </p>
-                  ))}
-                </>
-              )}
-            </Card>
-          )}
-
           <Card
             title={t.asset.aiTitle}
             subtitle={t.asset.aiSub}
@@ -358,9 +281,9 @@ export default async function AssetPage({
               {signals.map((s) => (
                 <li key={s.id} className="flex flex-wrap items-center gap-2 text-2xs">
                   <ActionBadge action={s.action} hint={actionHint(t, s.action)} />
-                  <Link href={`/signals/${s.id}`} className="text-ink hover:text-accent">
+                  <span className="text-ink">
                     {s.strategy_id} · {s.timeframe}
-                  </Link>
+                  </span>
                   <span className="text-ink-faint">{s.status}</span>
                   <span className="ml-auto text-ink-faint">{formatAge(s.generated_at_ms)}</span>
                 </li>
@@ -396,31 +319,6 @@ export default async function AssetPage({
         </Card>
       </div>
 
-      <Card title={t.threshold.title} subtitle={t.threshold.subtitle}>
-        <ThresholdForm
-          assetId={asset.id}
-          currency={asset.currency}
-          rows={thresholdRows}
-          labels={{
-            direction: t.threshold.direction,
-            above: t.threshold.above,
-            below: t.threshold.below,
-            price: t.threshold.price,
-            add: t.threshold.add,
-            adding: t.threshold.adding,
-            added: t.threshold.added,
-            failed: t.threshold.failed,
-            none: t.threshold.none,
-            active: t.threshold.active,
-            triggered: t.threshold.triggered,
-            remove: t.threshold.remove,
-            listTitle: t.threshold.listTitle,
-          }}
-        />
-        <div className="mt-3">
-          <WarningNote>{t.threshold.notSignal}</WarningNote>
-        </div>
-      </Card>
 
       <InfoNote>
         {t.asset.footer(

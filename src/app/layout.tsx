@@ -3,9 +3,9 @@ import { Nav } from '@/components/nav';
 import { HintLayer } from '@/components/hint-layer';
 import { Disclaimer } from '@/components/ui';
 import { countUnread } from '@/lib/notifications/repo';
-import { getDisplayCurrencySetting } from '@/lib/fx/service';
 import { i18n } from '@/lib/i18n';
-import { en } from '@/lib/i18n/en';
+import type { Messages } from '@/lib/i18n/en';
+import { id } from '@/lib/i18n/id';
 import type { Locale } from '@/lib/i18n/types';
 import './globals.css';
 
@@ -33,12 +33,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // The alert badge needs the database; if it is not migrated yet the shell
   // still renders rather than failing the whole page.
   let unread = 0;
-  let currency = 'native';
-  let locale: Locale = 'en';
-  let t = en;
+  let locale: Locale = 'id';
+  let t: Messages = id;
   try {
     unread = await countUnread();
-    currency = await getDisplayCurrencySetting();
     const loaded = await i18n();
     locale = loaded.locale;
     t = loaded.t;
@@ -58,7 +56,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           {t.nav.skipToContent}
         </a>
         <HintLayer />
-        <Nav unreadCount={unread} currency={currency} locale={locale} labels={t.nav} />
+        <Nav unreadCount={unread} locale={locale} labels={t.nav} />
         {/*
           `pb-20 lg:pb-0` clears the fixed mobile bottom bar. Scroll content
           hidden behind a fixed bar is the classic version of this bug, and it

@@ -1,123 +1,88 @@
 import 'server-only';
-import { ensureDefaultWatchlist, finishJob, listWatchlist, startJob } from '@/lib/db/repo';
-import { getSeries } from '@/lib/market/service';
-import type { Timeframe, TradingStyle } from '@/lib/market/types';
-import { STYLE_TIMEFRAMES } from '@/lib/market/types';
+import { finishJob, startJob } from '@/lib/db/repo';
+import { formatIdrSigned } from '@/lib/format';
+import { getMessages } from '@/lib/i18n';
 import { dispatchAlert } from '@/lib/notifications/dispatch';
-import { runEngineForAsset } from '@/lib/signals/engine';
-import { STRATEGIES } from '@/lib/strategies';
+import { runIndodaxScan, type ScanResult } from '@/lib/plan/engine';
+import type { ScanDecision } from '@/lib/plan/repo';
 import { listActiveActionable, updateSignalStatus } from '@/lib/signals/repo';
+import { MARKET_LOCK, withLock } from './lock';
+import { fetchTickerMap, liveCheck } from './monitor';
 
 /**
- * The scheduled refresh job.
- *
- * It deliberately refreshes ONLY what is needed: the assets on the watchlist,
- * at the single timeframe implied by each asset's configured trading style.
- * Refreshing every asset at every timeframe would multiply provider calls by
- * ~7 and exhaust free quotas within minutes.
+ * One refresh cycle, holding the market lock so it never overlaps the live
+ * monitor or another scan (JobBusyError if one is running):
+ *   1. an Indodax scan (the home-screen decision),
+ *   2. the live check on a fresh ticker snapshot: setup states, decision,
+ *      paper trades, auto-simulation, holdings, alerts (see monitor.ts),
+ *   3. the strategy's exit signal for each holding you recorded,
+ *   4. expiry of signals whose horizon passed long ago.
  */
 
 export interface RefreshSummary {
   jobId: string;
   startedAtMs: number;
   finishedAtMs: number;
-  assetsProcessed: number;
-  signalsCreated: number;
+  scanId: string | null;
+  decision: ScanDecision | null;
+  setups: number;
+  simUpdated: number;
+  simOpened: number;
   alertsCreated: number;
-  invalidations: number;
-  errors: { symbol: string; timeframe: string; error: string }[];
-  skipped: { symbol: string; timeframe: string; reason: string }[];
+  signalsExpired: number;
+  error: string | null;
 }
 
-/**
- * The primary timeframe to refresh for a trading style.
- *
- * Prefers the SLOWEST timeframe the style allows - it needs the fewest provider
- * calls and is least likely to be suppressed as stale - but only among
- * timeframes that at least one enabled strategy can actually trade. Without
- * that filter a "position" asset would be refreshed at 1w, where no strategy
- * runs, and would silently never produce a signal.
- */
-function primaryTimeframe(style: string): Timeframe {
-  const tfs = STYLE_TIMEFRAMES[(style as TradingStyle) in STYLE_TIMEFRAMES ? (style as TradingStyle) : 'swing'];
-  const supported = tfs.filter((tf) => STRATEGIES.some((s) => s.timeframes.includes(tf)));
-  return supported.at(-1) ?? tfs.at(-1)!;
+/** A scan holds the lock for well under a minute; this only matters if the process dies mid-scan. */
+const SCAN_LOCK_TTL_MS = 5 * 60_000;
+
+export async function runRefresh(options: { waitMs?: number } = {}): Promise<RefreshSummary & { scan: ScanResult | null }> {
+  return withLock(MARKET_LOCK, SCAN_LOCK_TTL_MS, refreshCycle, options.waitMs ?? 0);
 }
 
-export async function runRefresh(options: { force?: boolean } = {}): Promise<RefreshSummary> {
+async function refreshCycle(): Promise<RefreshSummary & { scan: ScanResult | null }> {
   const jobId = await startJob('refresh');
-  const startedAtMs = Date.now();
   const summary: RefreshSummary = {
     jobId,
-    startedAtMs,
+    startedAtMs: Date.now(),
     finishedAtMs: 0,
-    assetsProcessed: 0,
-    signalsCreated: 0,
+    scanId: null,
+    decision: null,
+    setups: 0,
+    simUpdated: 0,
+    simOpened: 0,
     alertsCreated: 0,
-    invalidations: 0,
-    errors: [],
-    skipped: [],
+    signalsExpired: 0,
+    error: null,
   };
 
   try {
-    const watchlistId = await ensureDefaultWatchlist();
-    const entries = await listWatchlist(watchlistId);
+    const scan = await runIndodaxScan();
+    summary.scanId = scan.scanId;
+    summary.decision = scan.decision;
+    summary.setups = Object.values(scan.summary.stateCounts).reduce((a, b) => a + (b ?? 0), 0);
+    summary.error = scan.error;
 
-    for (const entry of entries) {
-      const timeframe = primaryTimeframe(entry.tradingStyle);
-      try {
-        const result = await runEngineForAsset(entry, timeframe, { force: options.force });
-        summary.assetsProcessed++;
-
-        if (result.skipped && result.skipReason) {
-          summary.skipped.push({ symbol: entry.symbol, timeframe, reason: result.skipReason });
-        }
-
-        for (const inv of result.invalidated) {
-          summary.invalidations++;
-          const sent = await dispatchAlert({
-            dedupeKey: `signal_invalidated:${inv.signalId}`,
-            kind: 'signal_invalidated',
-            severity: 'warning',
-            title: `${entry.symbol} signal invalidated`,
-            body: inv.reason,
-            assetId: entry.id,
-            signalId: inv.signalId,
-          });
-          if (sent.created) summary.alertsCreated++;
-        }
-
-        for (const outcome of result.outcomes) {
-          if (!outcome.created || !outcome.signalId) continue;
-          summary.signalsCreated++;
-          const sent = await dispatchAlert({
-            dedupeKey: `new_signal:${outcome.signalId}`,
-            kind: 'new_signal',
-            severity: outcome.action === 'BUY' ? 'info' : 'warning',
-            title: `${outcome.action} ${entry.symbol} (${timeframe}) - ${outcome.strength} setup`,
-            body: `${outcome.summary}\nStrategy ${outcome.strategyId}@${outcome.strategyVersion}. Regime: ${result.regime}.`,
-            assetId: entry.id,
-            signalId: outcome.signalId,
-            payload: { strategyId: outcome.strategyId, action: outcome.action, timeframe },
-          });
-          if (sent.created) summary.alertsCreated++;
-        }
-      } catch (err) {
-        summary.errors.push({
-          symbol: entry.symbol,
-          timeframe,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    // One ticker snapshot for every pair, including pairs that left the scan
+    // universe while a simulation or holding on them is still open.
+    try {
+      const live = await liveCheck(await fetchTickerMap());
+      summary.decision = live.decision ?? summary.decision;
+      summary.simUpdated = live.simChanged;
+      summary.simOpened = live.simOpened;
+      summary.alertsCreated += live.alertsCreated;
+    } catch (err) {
+      summary.error = [summary.error, `live check failed: ${err instanceof Error ? err.message : String(err)}`]
+        .filter(Boolean)
+        .join(' | ');
     }
 
     summary.alertsCreated += await reviewOpenPositions();
-    summary.alertsCreated += await checkPriceThresholds();
-    summary.invalidations += await expireStaleSignals();
+    summary.signalsExpired += await expireStaleSignals();
 
     summary.finishedAtMs = Date.now();
-    await finishJob(jobId, summary.errors.length === 0 ? 'ok' : 'partial', summary);
-    return summary;
+    await finishJob(jobId, summary.error ? 'partial' : 'ok', summary);
+    return { ...summary, scan };
   } catch (err) {
     summary.finishedAtMs = Date.now();
     await finishJob(jobId, 'error', summary, err instanceof Error ? err.message : String(err));
@@ -126,113 +91,39 @@ export async function runRefresh(options: { force?: boolean } = {}): Promise<Ref
 }
 
 /**
- * Review every real holding and alert when the plan says to act.
+ * The strategy's own exit signal for every holding you recorded (for example
+ * "close fell below EMA50"). It needs closed candles, so it runs with the
+ * scan; stop, target and sell-by time are checked every minute against the
+ * live bid by the monitor.
  *
- * Positions are NEVER closed automatically: the app cannot know whether the
- * user executed the sale at their venue. It alerts, and the user records the
- * actual fill.
+ * Positions are NEVER closed automatically: the app cannot know whether you
+ * sold at the exchange. It alerts, and you record the actual fill.
  */
 async function reviewOpenPositions(): Promise<number> {
   const { listPositions } = await import('@/lib/positions/repo');
   const { buildPositionPlan } = await import('@/lib/positions/plan');
+  const t = await getMessages();
 
   let created = 0;
   for (const position of await listPositions('open')) {
     try {
       const plan = await buildPositionPlan(position);
-
-      if (plan.stopBreached) {
-        const sent = await dispatchAlert({
-          // Keyed to the position and the breaching bar, so a stop that stays
-          // breached across refreshes alerts once, not every cycle.
-          dedupeKey: `position_stop:${position.id}:${plan.latestCandleMs ?? 0}`,
-          kind: 'new_signal',
-          severity: 'critical',
-          title: `STOP HIT — ${position.symbol} (${position.venue})`,
-          body:
-            `A closed bar fell below your stop-loss ${position.stop_loss}.\n` +
-            `Your entry ${position.entry_price}, current ${plan.currentPrice}, ` +
-            `unrealised ${plan.unrealizedPnl?.toFixed(2) ?? 'n/a'} ${position.currency}.\n` +
-            `Sell at ${position.venue} if you are following the plan, then record the fill in AI Trade.`,
-          assetId: position.asset_id,
-          payload: { positionId: position.id, kind: 'stop_breached' },
-        });
-        if (sent.created) created++;
-        continue;
-      }
-
-      if (plan.action === 'SELL') {
-        const sent = await dispatchAlert({
-          dedupeKey: `position_sell:${position.id}:${plan.latestCandleMs ?? 0}`,
-          kind: 'new_signal',
-          severity: 'warning',
-          title: `SELL signal — ${position.symbol} (${position.venue})`,
-          body:
-            `${plan.actionReason}\n` +
-            `Entry ${position.entry_price}, current ${plan.currentPrice}, ` +
-            `unrealised ${plan.unrealizedPnl?.toFixed(2) ?? 'n/a'} ${position.currency} ` +
-            `(${plan.unrealizedPnlPct?.toFixed(2) ?? 'n/a'}%).\n` +
-            `This is an exit signal for a holding you own — not a short-selling signal.`,
-          assetId: position.asset_id,
-          payload: { positionId: position.id, kind: 'exit_signal' },
-        });
-        if (sent.created) created++;
-        continue;
-      }
-
-      if (plan.targetReached) {
-        const sent = await dispatchAlert({
-          dedupeKey: `position_target:${position.id}:${plan.latestCandleMs ?? 0}`,
-          kind: 'new_signal',
-          severity: 'info',
-          title: `Target reached — ${position.symbol} (${position.venue})`,
-          body:
-            `Price touched your first target ${position.take_profit_1}. ` +
-            `Unrealised ${plan.unrealizedPnl?.toFixed(2) ?? 'n/a'} ${position.currency}. ` +
-            `Decide whether to take profit or let it run toward ${position.take_profit_2 ?? 'your second target'}.`,
-          assetId: position.asset_id,
-          payload: { positionId: position.id, kind: 'target_reached' },
-        });
-        if (sent.created) created++;
-      }
+      if (plan.action !== 'SELL' || plan.stopBreached) continue;
+      const sent = await dispatchAlert({
+        // Keyed to the bar that produced it, so an unchanged signal alerts once.
+        dedupeKey: `position_sell:${position.id}:${plan.latestCandleMs ?? 0}`,
+        kind: 'position',
+        severity: 'warning',
+        title: t.notify.posExitTitle(position.display_name || position.symbol),
+        body: t.notify.posExitBody(plan.actionReason, formatIdrSigned(plan.unrealizedPnl)),
+        assetId: position.asset_id,
+        payload: { positionId: position.id },
+      });
+      if (sent.created) created++;
     } catch {
       // One bad position must never abort the whole refresh.
       continue;
     }
-  }
-  return created;
-}
-
-/** Fire configured price-threshold alerts, once per crossing. */
-async function checkPriceThresholds(): Promise<number> {
-  const { db } = await import('@/lib/db/driver');
-  const { getAssetById } = await import('@/lib/db/repo');
-  const d = await db();
-  const rows = await d.all<{ id: string; asset_id: string; direction: string; price: number }>(
-    'SELECT id, asset_id, direction, price FROM price_thresholds WHERE active = 1 AND triggered_at_ms IS NULL',
-  );
-
-  let created = 0;
-  for (const t of rows) {
-    const asset = await getAssetById(t.asset_id);
-    if (!asset) continue;
-    const series = await getSeries(asset, '1h', { limit: 5, minBars: 1 });
-    const price = series.series?.candles.at(-1)?.close;
-    if (price === undefined) continue;
-
-    const hit = t.direction === 'above' ? price >= t.price : price <= t.price;
-    if (!hit) continue;
-
-    await d.run('UPDATE price_thresholds SET triggered_at_ms = ?, active = 0 WHERE id = ?', [Date.now(), t.id]);
-    const sent = await dispatchAlert({
-      dedupeKey: `price_threshold:${t.id}`,
-      kind: 'price_threshold',
-      severity: 'info',
-      title: `${asset.symbol} crossed ${t.direction} ${t.price}`,
-      body: `Latest price ${price} ${asset.currency} crossed the configured threshold. Data quality: ${series.quality}.`,
-      assetId: asset.id,
-    });
-    if (sent.created) created++;
   }
   return created;
 }
